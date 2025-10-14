@@ -1,41 +1,117 @@
-name: Build Android AAR
+name: Build AAR & Commit to New Branch
 
+# 触发条件：1.8.0-fongmi分支推送/PR，或手动触发
 on:
   push:
-    branches: [ 1.8.0-fongmi ]
+    branches: [1.8.0-fongmi]
+    # 可选：仅当特定目录修改时触发（避免无关代码变更触发构建）
+    paths:
+      - '**.gradle'
+      - '**.gradle.kts'
+      - '**.java'
+      - '**.kt'
+      - '**.xml'
+      - 'gradle.properties'
+      - 'settings.gradle'
   pull_request:
-    branches: [ 1.8.0-fongmi ]
-  workflow_dispatch:
+    branches: [1.8.0-fongmi]
+  workflow_dispatch: # 允许手动在GitHub页面触发
 
 jobs:
-  build:
+  build-and-commit:
     runs-on: ubuntu-latest
-
     steps:
-    - uses: actions/checkout@v4
-      with:
-        ref: 1.8.0-fongmi  # 指定分支
+      ##########################################################################
+      # 步骤1：检出1.8.0-fongmi分支代码
+      ##########################################################################
+      - name: Checkout source branch (1.8.0-fongmi)
+        uses: actions/checkout@v4
+        with:
+          ref: 1.8.0-fongmi # 明确指定源分支
+          fetch-depth: 0 # 拉取完整历史（用于后续提交）
 
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-        cache: gradle
+      ##########################################################################
+      # 步骤2：配置Java 17环境（AGP 8.x+要求，适配项目依赖）
+      ##########################################################################
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin' # 推荐的开源JDK，稳定兼容
+          cache: gradle # 缓存Gradle依赖，加速后续构建
 
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+      ##########################################################################
+      # 步骤3：授予gradlew执行权限（Linux环境必需）
+      ##########################################################################
+      - name: Grant execute permission to gradlew
+        run: chmod +x ./gradlew
 
-    - name: Build Release AARs
-      run: ./gradlew assembleRelease
+      ##########################################################################
+      # 步骤4：执行编译命令（生成Release版本AAR）
+      ##########################################################################
+      - name: Build Release AARs
+        run: ./gradlew assembleRelease
+        env:
+          # 可选：添加编译环境变量（如无特殊需求可删除）
+          ANDROID_HOME: /usr/local/lib/android/sdk
 
-    - name: List built AARs
-      run: find . -path "*/build/outputs/aar/*.aar"  # 列出所有生成的AAR
+      ##########################################################################
+      # 步骤5：查看生成的AAR文件（日志调试用，可选但推荐）
+      ##########################################################################
+      - name: List generated AARs
+        run: |
+          echo "=== Generated AAR Files ==="
+          find . -path "*/build/outputs/aar/*.aar" -print
+          echo "==========================="
 
-    - name: Upload AAR artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: release-aars
-        path: |
-          */build/outputs/aar/*.aar
-        if-no-files-found: error  # 如果没有找到AAR文件则报错
+      ##########################################################################
+      # 步骤6：准备新分支（清理旧产物，保留AAR）
+      ##########################################################################
+      - name: Prepare new branch for AARs
+        run: |
+          # 定义新分支名（格式：release-aar-<源分支名>，可自定义）
+          NEW_BRANCH="release-aar-1.8.0-fongmi"
+          echo "New branch name: $NEW_BRANCH"
+          
+          # 配置Git用户信息（提交必需）
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # 拉取远程分支（若已存在则更新，不存在则创建）
+          if git show-ref --verify --quiet "refs/remotes/origin/$NEW_BRANCH"; then
+            git checkout $NEW_BRANCH
+            git pull origin $NEW_BRANCH
+          else
+            git checkout -b $NEW_BRANCH
+          fi
+          
+          # 清理新分支的旧文件（保留.git目录和AAR产物目录，避免冗余）
+          # 注意：若项目有需要保留的配置文件，需添加到--exclude中
+          git rm -rf . --exclude=".git" --exclude="*/build/outputs/aar"
+          
+          # 复制所有生成的AAR到项目根目录的aar/文件夹（方便查找，可选）
+          mkdir -p ./aar
+          find . -path "*/build/outputs/aar/*.aar" -exec cp {} ./aar/ \;
+
+      ##########################################################################
+      # 步骤7：提交AAR到新分支并推送到远程
+      ##########################################################################
+      - name: Commit and push AARs to new branch
+        run: |
+          NEW_BRANCH="release-aar-1.8.0-fongmi"
+          
+          # 检查是否有AAR产物（无产物则终止，避免空提交）
+          if [ -z "$(find ./aar -name '*.aar')" ]; then
+            echo "Error: No AAR files found! Build may have failed."
+            exit 1
+          fi
+          
+          # 提交AAR文件
+          git add ./aar/*
+          git commit -m "chore: add AARs built from 1.8.0-fongmi ($(date +%Y-%m-%d %H:%M:%S))"
+          
+          # 推送到远程仓库（使用GitHub Actions内置令牌）
+          git push origin $NEW_BRANCH
+        env:
+          # 使用GitHub Actions自动生成的令牌（无需手动配置，有仓库写入权限）
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
