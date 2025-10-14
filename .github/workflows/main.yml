@@ -38,5 +38,4 @@ jobs:
         name: release-aars
         path: |
           */build/outputs/aar/*.aar
-          !**/debug/**  # 排除debug版本的AAR（如果需要）
         if-no-files-found: error  # 如果没有找到AAR文件则报错
