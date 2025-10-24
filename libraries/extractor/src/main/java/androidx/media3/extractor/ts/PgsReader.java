@@ -9,8 +9,6 @@ import androidx.media3.extractor.ExtractorOutput;
 import androidx.media3.extractor.TrackOutput;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 
-import static androidx.media3.extractor.ts.TsPayloadReader.FLAG_DATA_ALIGNMENT_INDICATOR;
-
 public final class PgsReader implements ElementaryStreamReader {
 
   private final @Nullable String language;
@@ -49,15 +47,20 @@ public final class PgsReader implements ElementaryStreamReader {
 
   @Override
   public void packetStarted(long pesTimeUs, @TsPayloadReader.Flags int flags) {
-    if ((flags & FLAG_DATA_ALIGNMENT_INDICATOR) != 0) {
-      writingSample = true;
-      sampleTimeUs = pesTimeUs;
-      sampleBytesWritten = 0;
+    if (pesTimeUs == C.TIME_UNSET) {
+      writingSample = false;
+      return;
     }
+    writingSample = true;
+    sampleTimeUs = pesTimeUs;
+    sampleBytesWritten = 0;
   }
 
   @Override
   public void consume(ParsableByteArray data) {
+    if (output == null) {
+      return;
+    }
     if (writingSample) {
       int bytesLeft = data.bytesLeft();
       output.sampleData(data, bytesLeft);
@@ -69,7 +72,8 @@ public final class PgsReader implements ElementaryStreamReader {
   public void packetFinished(boolean isEndOfInput) {
     if (output != null && sampleTimeUs != C.TIME_UNSET && writingSample) {
       output.sampleMetadata(sampleTimeUs, C.BUFFER_FLAG_KEY_FRAME, sampleBytesWritten, 0, null);
-      writingSample = false;
     }
+    writingSample = false;
+    sampleTimeUs = C.TIME_UNSET;
   }
 }

@@ -361,8 +361,11 @@ public final class SsaParser implements SubtitleParser {
             .replace("\\N", "\n")
             .replace("\\n", "\n")
             .replace("\\h", "\u00A0");
-    Cue cue = createCue(text, layer, style, styleOverrides, screenWidth, screenHeight);
 
+    float dialogueMarginLeft = format.marginLeftIndex != C.INDEX_UNSET ? SsaStyle.parseMargin(lineValues[format.marginLeftIndex]) : 0f;
+    float dialogueMarginRight = format.marginRightIndex != C.INDEX_UNSET ? SsaStyle.parseMargin(lineValues[format.marginRightIndex]) : 0f;
+    float dialogueMarginVertical = format.marginVerticalIndex != C.INDEX_UNSET ? SsaStyle.parseMargin(lineValues[format.marginVerticalIndex]) : 0f;
+    Cue cue = createCue(text, layer, style, styleOverrides, dialogueMarginLeft, dialogueMarginRight, dialogueMarginVertical, screenWidth, screenHeight);
     int startTimeIndex = addCuePlacerholderByTime(startTimeUs, cueTimesUs, cues);
     int endTimeIndex = addCuePlacerholderByTime(endTimeUs, cueTimesUs, cues);
     // Iterate on cues from startTimeIndex until endTimeIndex, adding the current cue.
@@ -395,10 +398,60 @@ public final class SsaParser implements SubtitleParser {
       int layer,
       @Nullable SsaStyle style,
       SsaStyle.Overrides styleOverrides,
+      float dialogueMarginLeft,
+      float dialogueMarginRight,
+      float dialogueMarginVertical,
       float screenWidth,
       float screenHeight) {
     SpannableString spannableText = new SpannableString(text.length() > 512 ? "" : text);
     Cue.Builder cue = new Cue.Builder().setText(spannableText).setZIndex(layer);
+
+    @SsaStyle.SsaAlignment int alignment;
+    if (styleOverrides.alignment != SsaStyle.SSA_ALIGNMENT_UNKNOWN) {
+      alignment = styleOverrides.alignment;
+    } else if (style != null) {
+      alignment = style.alignment;
+    } else {
+      alignment = SsaStyle.SSA_ALIGNMENT_UNKNOWN;
+    }
+    cue.setTextAlignment(toTextAlignment(alignment))
+        .setPositionAnchor(toPositionAnchor(alignment))
+        .setLineAnchor(toLineAnchor(alignment));
+
+    if (styleOverrides.position != null
+        && screenHeight != Cue.DIMEN_UNSET
+        && screenWidth != Cue.DIMEN_UNSET) {
+      cue.setPosition(styleOverrides.position.x / screenWidth);
+      cue.setLine(styleOverrides.position.y / screenHeight, LINE_TYPE_FRACTION);
+    } else {
+      // TODO: Read the MarginL, MarginR and MarginV values from the Style & Dialogue lines.
+      cue.setPosition(computeDefaultLineOrPosition(cue.getPositionAnchor()));
+      cue.setLine(computeDefaultLineOrPosition(cue.getLineAnchor()), LINE_TYPE_FRACTION);
+    }
+
+    if (styleOverrides.alignment == SsaStyle.SSA_ALIGNMENT_UNKNOWN && styleOverrides.position == null && cue.getPosition() != Cue.DIMEN_UNSET && cue.getLine() != Cue.DIMEN_UNSET) {
+      float marginLeftPixels = dialogueMarginLeft != 0f ? dialogueMarginLeft : (style != null ? style.marginLeft : 0f);
+      float marginRightPixels = dialogueMarginRight != 0f ? dialogueMarginRight : (style != null ? style.marginRight : 0f);
+      if (screenWidth != Cue.DIMEN_UNSET && screenWidth != 0f) {
+        float marginLeft = marginLeftPixels / screenWidth;
+        float marginRight = marginRightPixels / screenWidth;
+        if (SsaStyle.hasLeftAlignment(style)) {
+          cue.setPosition(cue.getPosition() + marginLeft);
+        } else if (SsaStyle.hasRightAlignment(style)) {
+          cue.setPosition(cue.getPosition() - marginRight);
+        } else {
+          cue.setPosition(cue.getPosition() + (marginLeft - marginRight) / 2);
+        }
+        cue.setSize(1 - marginRight - marginLeft);
+      }
+      if (!SsaStyle.hasMiddleAlignment(style)) {
+        float marginVerticalPixels = dialogueMarginVertical != 0f ? dialogueMarginVertical : (style != null ? style.marginVertical : 0f);
+        if (marginVerticalPixels != 0f && screenHeight != Cue.DIMEN_UNSET && screenHeight != 0f) {
+          float marginVertical = marginVerticalPixels / screenHeight;
+          cue.setLine(cue.getLine() - (SsaStyle.hasTopAlignment(style) ? -marginVertical : marginVertical), LINE_TYPE_FRACTION);
+        }
+      }
+    }
 
     if (style != null) {
       if (style.primaryColor != null) {
@@ -452,29 +505,6 @@ public final class SsaParser implements SubtitleParser {
             /* end= */ spannableText.length(),
             SpannableString.SPAN_EXCLUSIVE_EXCLUSIVE);
       }
-    }
-
-    @SsaStyle.SsaAlignment int alignment;
-    if (styleOverrides.alignment != SsaStyle.SSA_ALIGNMENT_UNKNOWN) {
-      alignment = styleOverrides.alignment;
-    } else if (style != null) {
-      alignment = style.alignment;
-    } else {
-      alignment = SsaStyle.SSA_ALIGNMENT_UNKNOWN;
-    }
-    cue.setTextAlignment(toTextAlignment(alignment))
-        .setPositionAnchor(toPositionAnchor(alignment))
-        .setLineAnchor(toLineAnchor(alignment));
-
-    if (styleOverrides.position != null
-        && screenHeight != Cue.DIMEN_UNSET
-        && screenWidth != Cue.DIMEN_UNSET) {
-      cue.setPosition(styleOverrides.position.x / screenWidth);
-      cue.setLine(styleOverrides.position.y / screenHeight, LINE_TYPE_FRACTION);
-    } else {
-      // TODO: Read the MarginL, MarginR and MarginV values from the Style & Dialogue lines.
-      cue.setPosition(computeDefaultLineOrPosition(cue.getPositionAnchor()));
-      cue.setLine(computeDefaultLineOrPosition(cue.getLineAnchor()), LINE_TYPE_FRACTION);
     }
 
     return cue.build();
