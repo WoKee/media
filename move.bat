@@ -1,7 +1,7 @@
 @echo off
-set "source_dir=D:\Project\media\libraries"
-set "target_dir=D:\Project\TV\app\libs"
-set "move_list=D:\Project\media\move.txt"
+set "source_dir=D:\Andorid\WORK\fongmi-media\libraries"
+set "target_dir=C:\Users\wokee\Documents\TV\app\libs"
+set "move_list=D:\Andorid\WORK\fongmi-media\move.txt"
 
 for /r "%source_dir%" %%a in (lib-*-release.aar) do (
     findstr /x /c:"%%~nxa" "%move_list%" >nul
