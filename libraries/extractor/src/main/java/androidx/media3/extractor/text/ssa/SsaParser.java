@@ -311,7 +311,7 @@ public final class SsaParser implements SubtitleParser {
           Log.w(TAG, "Skipping dialogue line before complete format: " + currentLine);
           continue;
         }
-        @Nullable SsaDialogueInfo dialogue = parseDialogueLine(currentLine, format);
+        @Nullable SsaDialogueInfo dialogue = parseDialogueLine(currentLine, format, cues, cueTimesUs);
         if (dialogue != null) {
           dialogues.add(dialogue);
         }
