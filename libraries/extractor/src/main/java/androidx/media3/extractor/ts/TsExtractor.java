@@ -17,6 +17,8 @@ package androidx.media3.extractor.ts;
 
 import static androidx.media3.extractor.ts.TsPayloadReader.EsInfo.AUDIO_TYPE_UNDEFINED;
 import static androidx.media3.extractor.ts.TsPayloadReader.FLAG_PAYLOAD_UNIT_START_INDICATOR;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 import static java.lang.annotation.ElementType.TYPE_USE;
 
 import android.util.SparseArray;
@@ -26,7 +28,7 @@ import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.MimeTypes;
-import androidx.media3.common.util.Assertions;
+import androidx.media3.common.ParserException;
 import androidx.media3.common.util.NullableType;
 import androidx.media3.common.util.ParsableBitArray;
 import androidx.media3.common.util.ParsableByteArray;
@@ -327,7 +329,7 @@ public final class TsExtractor implements Extractor {
       TimestampAdjuster timestampAdjuster,
       TsPayloadReader.Factory payloadReaderFactory,
       int timestampSearchBytes) {
-    this.payloadReaderFactory = Assertions.checkNotNull(payloadReaderFactory);
+    this.payloadReaderFactory = checkNotNull(payloadReaderFactory);
     this.timestampSearchBytes = timestampSearchBytes;
     this.mode = mode;
     this.extractorFlags = extractorFlags;
@@ -395,7 +397,7 @@ public final class TsExtractor implements Extractor {
 
   @Override
   public void seek(long position, long timeUs) {
-    Assertions.checkState(mode != MODE_HLS);
+    checkState(mode != MODE_HLS);
     int timestampAdjustersCount = timestampAdjusters.size();
     for (int i = 0; i < timestampAdjustersCount; i++) {
       TimestampAdjuster timestampAdjuster = timestampAdjusters.get(i);

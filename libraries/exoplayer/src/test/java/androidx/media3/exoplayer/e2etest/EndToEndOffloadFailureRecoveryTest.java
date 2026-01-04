@@ -16,6 +16,7 @@
 package androidx.media3.exoplayer.e2etest;
 
 import static androidx.media3.common.TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED;
+import static androidx.media3.test.utils.robolectric.TestPlayerRunHelper.advance;
 import static com.google.common.truth.Truth.assertThat;
 
 import android.content.Context;
@@ -38,7 +39,6 @@ import androidx.media3.test.utils.DumpFileAsserts;
 import androidx.media3.test.utils.Dumper;
 import androidx.media3.test.utils.FakeClock;
 import androidx.media3.test.utils.robolectric.ShadowMediaCodecConfig;
-import androidx.media3.test.utils.robolectric.TestPlayerRunHelper;
 import androidx.test.core.app.ApplicationProvider;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import java.nio.ByteBuffer;
@@ -89,9 +89,10 @@ public class EndToEndOffloadFailureRecoveryTest {
             .build();
     player.setMediaItem(MediaItem.fromUri("asset:///media/ogg/" + INPUT_FILE));
     player.prepare();
+    advance(player).untilState(Player.STATE_READY);
     player.play();
 
-    TestPlayerRunHelper.runUntilPlaybackState(player, Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -113,9 +114,10 @@ public class EndToEndOffloadFailureRecoveryTest {
             .build();
     player.setMediaItem(MediaItem.fromUri("asset:///media/ogg/" + INPUT_FILE));
     player.prepare();
+    advance(player).untilState(Player.STATE_READY);
     player.play();
 
-    TestPlayerRunHelper.runUntilPlaybackState(player, Player.STATE_ENDED);
+    advance(player).untilState(Player.STATE_ENDED);
     player.release();
 
     DumpFileAsserts.assertOutput(
@@ -138,12 +140,12 @@ public class EndToEndOffloadFailureRecoveryTest {
 
     @Override
     protected AudioSink buildAudioSink(
-        Context context, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams) {
+        Context context, boolean enableFloatOutput, boolean enableAudioOutputPlaybackParams) {
       dumpingAudioSink =
           new DumpingAudioSink(
               new DefaultAudioSink.Builder(context)
                   .setEnableFloatOutput(enableFloatOutput)
-                  .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                  .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
                   .build());
       return dumpingAudioSink;
     }
@@ -165,12 +167,12 @@ public class EndToEndOffloadFailureRecoveryTest {
 
     @Override
     protected AudioSink buildAudioSink(
-        Context context, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams) {
+        Context context, boolean enableFloatOutput, boolean enableAudioOutputPlaybackParams) {
       dumpingAudioSink =
           new DumpingAudioSinkWithOffloadInitFailure(
               new DefaultAudioSink.Builder(context)
                   .setEnableFloatOutput(enableFloatOutput)
-                  .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                  .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
                   .build());
       return dumpingAudioSink;
     }
@@ -187,12 +189,12 @@ public class EndToEndOffloadFailureRecoveryTest {
 
     @Override
     protected AudioSink buildAudioSink(
-        Context context, boolean enableFloatOutput, boolean enableAudioTrackPlaybackParams) {
+        Context context, boolean enableFloatOutput, boolean enableAudioOutputPlaybackParams) {
       dumpingAudioSink =
           new DumpingAudioSinkWithOffloadWriteFailure(
               new DefaultAudioSink.Builder(context)
                   .setEnableFloatOutput(enableFloatOutput)
-                  .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
+                  .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
                   .build());
       return dumpingAudioSink;
     }

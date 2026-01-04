@@ -17,6 +17,8 @@ package androidx.media3.extractor.text.ssa;
 
 import static androidx.media3.common.text.Cue.LINE_TYPE_FRACTION;
 import static androidx.media3.common.util.Util.castNonNull;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
 
 import android.graphics.Typeface;
 import android.text.Layout;
@@ -31,7 +33,6 @@ import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.Format.CueReplacementBehavior;
 import androidx.media3.common.text.Cue;
-import androidx.media3.common.util.Assertions;
 import androidx.media3.common.util.Consumer;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.ParsableByteArray;
@@ -120,9 +121,9 @@ public final class SsaParser implements SubtitleParser {
       // in a MKV. According to https://www.matroska.org/technical/subtitles.html, these muxed
       // subtitles are always encoded in UTF-8.
       String formatLine = Util.fromUtf8Bytes(initializationData.get(0));
-      Assertions.checkArgument(formatLine.startsWith(FORMAT_LINE_PREFIX));
+      checkArgument(formatLine.startsWith(FORMAT_LINE_PREFIX));
       dialogueFormatFromInitializationData =
-          Assertions.checkNotNull(SsaDialogueFormat.fromFormatLine(formatLine));
+          checkNotNull(SsaDialogueFormat.fromFormatLine(formatLine));
       parseHeader(new ParsableByteArray(initializationData.get(1)), StandardCharsets.UTF_8);
     } else {
       haveInitializationData = false;
@@ -319,9 +320,19 @@ public final class SsaParser implements SubtitleParser {
     processCues(dialogues, cues, cueTimesUs);
   }
 
+
+  /**
+   * Parses a dialogue line.
+   *
+   * @param dialogueLine The dialogue values (i.e. everything after {@code Dialogue:}).
+   * @param format The dialogue format to use when parsing {@code dialogueLine}.
+   * @param cues A list to which parsed cues will be added.
+   * @param cueTimesUs A sorted list to which parsed cue timestamps will be added.
+   */
   @Nullable
-  private SsaDialogueInfo parseDialogueLine(String dialogueLine, SsaDialogueFormat format) {
-    Assertions.checkArgument(dialogueLine.startsWith(DIALOGUE_LINE_PREFIX));
+  private SsaDialogueInfo parseDialogueLine(
+      String dialogueLine, SsaDialogueFormat format, List<List<Cue>> cues, List<Long> cueTimesUs) {
+    checkArgument(dialogueLine.startsWith(DIALOGUE_LINE_PREFIX));
     String[] lineValues =
         dialogueLine.substring(DIALOGUE_LINE_PREFIX.length()).split(",", format.length);
     if (lineValues.length != format.length) {

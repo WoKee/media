@@ -32,9 +32,6 @@ import static androidx.media3.common.Player.COMMAND_SET_REPEAT_MODE;
 import static androidx.media3.common.Player.COMMAND_SET_SHUFFLE_MODE;
 import static androidx.media3.common.Player.COMMAND_SET_SPEED_AND_PITCH;
 import static androidx.media3.common.Player.COMMAND_STOP;
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkNotNull;
-import static androidx.media3.common.util.Assertions.checkStateNotNull;
 import static androidx.media3.common.util.Util.castNonNull;
 import static androidx.media3.common.util.Util.postOrRun;
 import static androidx.media3.session.MediaConstants.EXTRAS_KEY_ERROR_RESOLUTION_ACTION_INTENT_COMPAT;
@@ -42,9 +39,13 @@ import static androidx.media3.session.MediaConstants.EXTRAS_KEY_MEDIA_ID_COMPAT;
 import static androidx.media3.session.MediaConstants.EXTRAS_KEY_PLAYBACK_SPEED_COMPAT;
 import static androidx.media3.session.MediaUtils.intersect;
 import static androidx.media3.session.SessionCommand.COMMAND_CODE_CUSTOM;
+import static androidx.media3.session.SessionCommand.COMMAND_CODE_SESSION_SET_RATING;
 import static androidx.media3.session.SessionError.ERROR_UNKNOWN;
 import static androidx.media3.session.SessionResult.RESULT_INFO_SKIPPED;
 import static androidx.media3.session.SessionResult.RESULT_SUCCESS;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkNotNull;
+import static com.google.common.base.Preconditions.checkState;
 
 import android.annotation.SuppressLint;
 import android.app.PendingIntent;
@@ -313,12 +314,16 @@ import org.checkerframework.checker.initialization.qual.Initialized;
    * the platform session.
    */
   public MediaSession.ConnectionResult getPlatformConnectionResult(MediaSession mediaSession) {
-    return new MediaSession.ConnectionResult.AcceptedResultBuilder(mediaSession)
-        .setAvailableSessionCommands(availableSessionCommands)
-        .setAvailablePlayerCommands(availablePlayerCommands)
-        .setCustomLayout(customLayout)
-        .setMediaButtonPreferences(mediaButtonPreferences)
-        .build();
+    MediaSession.ConnectionResult.AcceptedResultBuilder result =
+        new MediaSession.ConnectionResult.AcceptedResultBuilder(mediaSession)
+            .setAvailableSessionCommands(availableSessionCommands)
+            .setAvailablePlayerCommands(availablePlayerCommands);
+    if (!mediaButtonPreferences.isEmpty()) {
+      result.setMediaButtonPreferences(mediaButtonPreferences);
+    } else {
+      result.setCustomLayout(customLayout);
+    }
+    return result.build();
   }
 
   /**
@@ -490,8 +495,8 @@ import org.checkerframework.checker.initialization.qual.Initialized;
 
   @Override
   public void onCommand(String commandName, @Nullable Bundle args, @Nullable ResultReceiver cb) {
-    checkStateNotNull(commandName);
-    if (commandName.equals(MediaConstants.SESSION_COMMAND_MEDIA3_PLAY_REQUEST)) {
+    checkNotNull(commandName);
+    if (commandName.equals(MediaConstants.SESSION_COMMAND_MEDIA3_CHANGE_REQUEST)) {
       // Only applicable to controllers on Media3 1.5, where this command was sent via sendCommand
       // instead of sendCustomAction. No need to handle this command here.
       return;
@@ -506,7 +511,10 @@ import org.checkerframework.checker.initialization.qual.Initialized;
         controller -> {
           ListenableFuture<SessionResult> future =
               sessionImpl.onCustomCommandOnHandler(
-                  controller, command, args == null ? Bundle.EMPTY : args);
+                  controller,
+                  /* progressReporter= */ null,
+                  command,
+                  args == null ? Bundle.EMPTY : args);
           if (cb != null) {
             sendCustomCommandResultWhenReady(cb, future);
           } else {
@@ -517,17 +525,22 @@ import org.checkerframework.checker.initialization.qual.Initialized;
 
   @Override
   public void onCustomAction(String action, @Nullable Bundle args) {
-    if (action.equals(MediaConstants.SESSION_COMMAND_MEDIA3_PLAY_REQUEST)) {
+    if (action.equals(MediaConstants.SESSION_COMMAND_MEDIA3_CHANGE_REQUEST)) {
       // Ignore, no need to handle the custom action.
       return;
     }
-    SessionCommand command = new SessionCommand(action, /* extras= */ Bundle.EMPTY);
+    Bundle nonNullArgs = args != null ? args : Bundle.EMPTY;
+    SessionCommand command = new SessionCommand(action, nonNullArgs);
+    if (CommandButton.isPredefinedCustomCommandButtonCode(command.customAction)) {
+      dispatchCustomCommandAsPredefinedCommand(command);
+      return;
+    }
     dispatchSessionTaskWithSessionCommand(
         command,
         controller ->
             ignoreFuture(
                 sessionImpl.onCustomCommandOnHandler(
-                    controller, command, args != null ? args : Bundle.EMPTY)));
+                    controller, /* progressReporter= */ null, command, nonNullArgs)));
   }
 
   @Override
@@ -540,7 +553,8 @@ import org.checkerframework.checker.initialization.qual.Initialized;
             /* trusted= */ false,
             /* cb= */ null,
             /* connectionHints= */ Bundle.EMPTY,
-            /* maxCommandsForMediaItems= */ 0),
+            /* maxCommandsForMediaItems= */ 0,
+            /* isPackageNameVerified= */ SDK_INT >= 33),
         intent);
   }
 
@@ -599,13 +613,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
 
   @Override
   public void onPlay() {
-    dispatchSessionTaskWithPlayerCommand(
-        COMMAND_PLAY_PAUSE,
-        controller ->
-            sessionImpl.handleMediaControllerPlayRequest(
-                controller, /* callOnPlayerInteractionFinished= */ true),
-        sessionCompat.getCurrentControllerInfo(),
-        /* callOnPlayerInteractionFinished= */ false);
+    dispatchSessionTaskWithPlayRequest();
   }
 
   @Override
@@ -751,18 +759,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
       Log.w(TAG, "Ignoring invalid RatingCompat " + ratingCompat);
       return;
     }
-    dispatchSessionTaskWithSessionCommand(
-        SessionCommand.COMMAND_CODE_SESSION_SET_RATING,
-        controller -> {
-          @Nullable
-          MediaItem currentItem =
-              sessionImpl.getPlayerWrapper().getCurrentMediaItemWithCommandCheck();
-          if (currentItem == null) {
-            return;
-          }
-          // MediaControllerCompat#setRating doesn't return a value.
-          ignoreFuture(sessionImpl.onSetRatingOnHandler(controller, currentItem.mediaId, rating));
-        });
+    dispatchSessionTaskWithSetRatingSessionCommand(rating);
   }
 
   @Override
@@ -849,6 +846,16 @@ import org.checkerframework.checker.initialization.qual.Initialized;
     return broadcastReceiverComponentName != null;
   }
 
+  private void dispatchSessionTaskWithPlayRequest() {
+    dispatchSessionTaskWithPlayerCommand(
+        COMMAND_PLAY_PAUSE,
+        controller ->
+            sessionImpl.handleMediaControllerPlayRequest(
+                controller, /* callOnPlayerInteractionFinished= */ true),
+        sessionCompat.getCurrentControllerInfo(),
+        /* callOnPlayerInteractionFinished= */ false);
+  }
+
   private void dispatchSessionTaskWithPlayerCommand(
       @Player.Command int command,
       SessionTask task,
@@ -922,10 +929,21 @@ import org.checkerframework.checker.initialization.qual.Initialized;
         });
   }
 
-  private void dispatchSessionTaskWithSessionCommand(
-      @CommandCode int commandCode, SessionTask task) {
+  private void dispatchSessionTaskWithSetRatingSessionCommand(Rating rating) {
     dispatchSessionTaskWithSessionCommandInternal(
-        null, commandCode, task, sessionCompat.getCurrentControllerInfo());
+        /* sessionCommand= */ null,
+        COMMAND_CODE_SESSION_SET_RATING,
+        controller -> {
+          @Nullable
+          MediaItem currentItem =
+              sessionImpl.getPlayerWrapper().getCurrentMediaItemWithCommandCheck();
+          if (currentItem == null) {
+            return;
+          }
+          // MediaControllerCompat#setRating doesn't return a value.
+          ignoreFuture(sessionImpl.onSetRatingOnHandler(controller, currentItem.mediaId, rating));
+        },
+        sessionCompat.getCurrentControllerInfo());
   }
 
   private void dispatchSessionTaskWithSessionCommand(
@@ -989,6 +1007,41 @@ import org.checkerframework.checker.initialization.qual.Initialized;
         });
   }
 
+  private void dispatchCustomCommandAsPredefinedCommand(SessionCommand command) {
+    CommandButton actualCommand;
+    try {
+      actualCommand = CommandButton.convertFromPredefinedCustomCommand(command);
+    } catch (RuntimeException e) {
+      // Catch exception caused by malformed data from a controller.
+      Log.w(TAG, "Failed to convert predefined custom command: " + command.customAction, e);
+      return;
+    }
+    if (!actualCommand.canExecuteAction()) {
+      Log.w(TAG, "Can't execute predefined custom command: " + command.customAction);
+      return;
+    }
+    if (actualCommand.sessionCommand != null) {
+      checkState(actualCommand.sessionCommand.commandCode == COMMAND_CODE_SESSION_SET_RATING);
+      dispatchSessionTaskWithSetRatingSessionCommand(
+          (Rating) checkNotNull(actualCommand.parameter));
+    } else {
+      if (actualCommand.isPlayRequestPlayerAction(sessionImpl.getPlayerWrapper())) {
+        dispatchSessionTaskWithPlayRequest();
+      } else if (actualCommand.playerCommand == COMMAND_SET_MEDIA_ITEM) {
+        handleMediaRequest(
+            (MediaItem) checkNotNull(actualCommand.parameter),
+            /* prepare= */ false,
+            /* play= */ false);
+      } else {
+        dispatchSessionTaskWithPlayerCommand(
+            actualCommand.playerCommand,
+            controller -> actualCommand.executePlayerAction(sessionImpl.getPlayerWrapper()),
+            sessionCompat.getCurrentControllerInfo(),
+            /* callOnPlayerInteractionFinished= */ true);
+      }
+    }
+  }
+
   @Nullable
   private ControllerInfo tryGetController(RemoteUserInfo remoteUserInfo) {
     @Nullable ControllerInfo controller = connectedControllersManager.getController(remoteUserInfo);
@@ -1003,7 +1056,8 @@ import org.checkerframework.checker.initialization.qual.Initialized;
               sessionManager.isTrustedForMediaControl(remoteUserInfo),
               controllerCb,
               /* connectionHints= */ Bundle.EMPTY,
-              /* maxCommandsForMediaItems= */ 0);
+              /* maxCommandsForMediaItems= */ 0,
+              /* isPackageNameVerified= */ SDK_INT >= 33);
       MediaSession.ConnectionResult connectionResult = sessionImpl.onConnectOnHandler(controller);
       if (!connectionResult.isAccepted) {
         controllerCb.onDisconnected(/* seq= */ 0);
@@ -1045,6 +1099,10 @@ import org.checkerframework.checker.initialization.qual.Initialized;
   }
 
   private void handleMediaRequest(MediaItem mediaItem, boolean play) {
+    handleMediaRequest(mediaItem, /* prepare= */ true, play);
+  }
+
+  private void handleMediaRequest(MediaItem mediaItem, boolean prepare, boolean play) {
     dispatchSessionTaskWithPlayerCommand(
         COMMAND_SET_MEDIA_ITEM,
         controller -> {
@@ -1065,10 +1123,12 @@ import org.checkerframework.checker.initialization.qual.Initialized;
                             MediaUtils.setMediaItemsWithStartIndexAndPosition(
                                 player, mediaItemsWithStartPosition);
                             @Player.State int playbackState = player.getPlaybackState();
-                            if (playbackState == Player.STATE_IDLE) {
-                              player.prepareIfCommandAvailable();
-                            } else if (playbackState == Player.STATE_ENDED) {
-                              player.seekToDefaultPositionIfCommandAvailable();
+                            if (prepare) {
+                              if (playbackState == Player.STATE_IDLE) {
+                                player.prepareIfCommandAvailable();
+                              } else if (playbackState == Player.STATE_ENDED) {
+                                player.seekToDefaultPositionIfCommandAvailable();
+                              }
                             }
                             if (play) {
                               player.playIfCommandAvailable();
@@ -1406,7 +1466,16 @@ import org.checkerframework.checker.initialization.qual.Initialized;
 
     @Override
     public void sendCustomCommand(int seq, SessionCommand command, Bundle args) {
-      sessionCompat.sendSessionEvent(command.customAction, args);
+      Bundle extras;
+      if (args.isEmpty()) {
+        extras = command.customExtras;
+      } else if (command.customExtras.isEmpty()) {
+        extras = args;
+      } else {
+        extras = new Bundle(command.customExtras);
+        extras.putAll(args);
+      }
+      sessionCompat.sendSessionEvent(command.customAction, extras);
     }
 
     @Override
@@ -1588,8 +1657,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
       @DeviceInfo.PlaybackType
       int playbackType = sessionImpl.getPlayerWrapper().getDeviceInfo().playbackType;
       if (playbackType == DeviceInfo.PLAYBACK_TYPE_LOCAL) {
-        int legacyStreamType = LegacyConversions.getLegacyStreamType(audioAttributes);
-        sessionCompat.setPlaybackToLocal(legacyStreamType);
+        sessionCompat.setPlaybackToLocal(audioAttributes.getStreamType());
       }
     }
 
@@ -1598,8 +1666,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
       PlayerWrapper player = sessionImpl.getPlayerWrapper();
       volumeProviderCompat = createVolumeProviderCompat(player);
       if (volumeProviderCompat == null) {
-        int streamType =
-            LegacyConversions.getLegacyStreamType(player.getAudioAttributesWithCommandCheck());
+        int streamType = player.getAudioAttributesWithCommandCheck().getStreamType();
         sessionCompat.setPlaybackToLocal(streamType);
       } else {
         sessionCompat.setPlaybackToRemote(volumeProviderCompat);
@@ -1720,7 +1787,7 @@ import org.checkerframework.checker.initialization.qual.Initialized;
     public void handleMessage(Message msg) {
       ControllerInfo controller = (ControllerInfo) msg.obj;
       if (connectedControllersManager.isConnected(controller)) {
-        checkStateNotNull(controller.getControllerCb()).onDisconnected(/* seq= */ 0);
+        checkNotNull(controller.getControllerCb()).onDisconnected(/* seq= */ 0);
         connectedControllersManager.removeController(controller);
       }
     }
@@ -1844,14 +1911,18 @@ import org.checkerframework.checker.initialization.qual.Initialized;
       if (sessionCommand != null
           && commandButton.isEnabled
           && sessionCommand.commandCode == SessionCommand.COMMAND_CODE_CUSTOM
-          && CommandButton.isButtonCommandAvailable(
-              commandButton, availableSessionCommands, availableCommands)) {
+          && (CommandButton.isButtonCommandAvailable(
+                  commandButton, availableSessionCommands, availableCommands)
+              || CommandButton.isPredefinedCustomCommandButtonCode(sessionCommand.customAction))) {
         boolean hasIcon = commandButton.icon != CommandButton.ICON_UNDEFINED;
         boolean hasIconUri = commandButton.iconUri != null;
         Bundle actionExtras =
-            hasIcon || hasIconUri
+            hasIcon || hasIconUri || !commandButton.extras.isEmpty()
                 ? new Bundle(sessionCommand.customExtras)
                 : sessionCommand.customExtras;
+        if (!commandButton.extras.isEmpty()) {
+          actionExtras.putAll(commandButton.extras);
+        }
         if (hasIcon) {
           actionExtras.putInt(
               MediaConstants.EXTRAS_KEY_COMMAND_BUTTON_ICON_COMPAT, commandButton.icon);
