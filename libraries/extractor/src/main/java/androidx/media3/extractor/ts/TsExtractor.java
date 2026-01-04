@@ -799,7 +799,7 @@ public final class TsExtractor implements Extractor {
         }
         remainingEntriesLength -= esInfoLength + 5;
 
-        int trackId = (streamType << 16) | (elementaryPid & 0x1FFF);
+        int trackId = elementaryPid;
         if (trackIds.get(trackId)) {
           continue;
         }

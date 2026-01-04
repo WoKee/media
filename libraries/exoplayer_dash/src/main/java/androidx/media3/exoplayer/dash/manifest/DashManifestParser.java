@@ -1990,7 +1990,7 @@ public class DashManifestParser extends DefaultHandler
 
   protected static long parseLong(XmlPullParser xpp, String name, long defaultValue) {
     String value = xpp.getAttributeValue(null, name);
-    return value == null ? defaultValue : Long.parseLong(value);
+    return value == null ? defaultValue : Long.parseLong(value.replaceAll("[^0-9]", ""));
   }
 
   protected static float parseFloat(XmlPullParser xpp, String name, float defaultValue) {

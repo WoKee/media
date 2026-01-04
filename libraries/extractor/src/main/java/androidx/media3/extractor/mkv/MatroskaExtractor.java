@@ -59,6 +59,7 @@ import androidx.media3.extractor.TrueHdSampleRechunker;
 import androidx.media3.extractor.text.SubtitleParser;
 import androidx.media3.extractor.text.SubtitleTranscodingExtractorOutput;
 import com.google.common.collect.ImmutableList;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.annotation.Documented;
 import java.lang.annotation.Retention;
@@ -76,6 +77,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.zip.DataFormatException;
+import java.util.zip.Inflater;
 import org.checkerframework.checker.nullness.qual.EnsuresNonNull;
 import org.checkerframework.checker.nullness.qual.MonotonicNonNull;
 import org.checkerframework.checker.nullness.qual.RequiresNonNull;
@@ -1060,10 +1063,7 @@ public class MatroskaExtractor implements Extractor {
         break;
       case ID_CONTENT_COMPRESSION_ALGORITHM:
         // This extractor only supports header stripping.
-        if (value != 3) {
-          throw ParserException.createForMalformedContainer(
-              "ContentCompAlgo " + value + " not supported", /* cause= */ null);
-        }
+        getCurrentTrack(id).contentCompAlgo = (int) value;
         break;
       case ID_CONTENT_ENCRYPTION_ALGORITHM:
         // Only the value 5 (AES) is allowed according to the WebM specification.
@@ -1303,8 +1303,12 @@ public class MatroskaExtractor implements Extractor {
       case ID_CONTENT_COMPRESSION_SETTINGS:
         assertInTrackEntry(id);
         // This extractor only supports header stripping, so the payload is the stripped bytes.
-        currentTrack.sampleStrippedBytes = new byte[contentSize];
-        input.readFully(currentTrack.sampleStrippedBytes, 0, contentSize);
+        if (currentTrack.contentCompAlgo == 3) {
+          currentTrack.sampleStrippedBytes = new byte[contentSize];
+          input.readFully(currentTrack.sampleStrippedBytes, 0, contentSize);
+        } else {
+          input.skipFully(contentSize);
+        }
         break;
       case ID_CONTENT_ENCRYPTION_KEY_ID:
         byte[] encryptionKey = new byte[contentSize];
@@ -1601,6 +1605,30 @@ public class MatroskaExtractor implements Extractor {
   @RequiresNonNull("#2.output")
   private int writeSampleData(ExtractorInput input, Track track, int size, boolean isBlockGroup)
       throws IOException {
+    if (track.contentCompAlgo == 1) {
+      if (scratch.capacity() < size) {
+        scratch.ensureCapacity(size);
+      }
+      input.readFully(scratch.getData(), 0, size);
+      byte[] decompressedData;
+      try {
+        decompressedData = decompressZlib(scratch.getData(), size);
+      } catch (DataFormatException e) {
+        throw ParserException.createForMalformedContainer("zlib Decompression failed", e);
+      }
+      if (CODEC_ID_SUBRIP.equals(track.codecId)) {
+        writeSubtitleSampleData(decompressedData, SUBRIP_PREFIX);
+      } else if (CODEC_ID_ASS.equals(track.codecId) || CODEC_ID_SSA.equals(track.codecId)) {
+        writeSubtitleSampleData(decompressedData, SSA_PREFIX);
+      } else if (CODEC_ID_VTT.equals(track.codecId)) {
+        writeSubtitleSampleData(decompressedData, VTT_PREFIX);
+      } else {
+        track.output.sampleData(new ParsableByteArray(decompressedData), decompressedData.length);
+        sampleBytesWritten += decompressedData.length;
+      }
+      return finishWriteSampleData();
+    }
+
     if (CODEC_ID_SUBRIP.equals(track.codecId)) {
       writeSubtitleSampleData(input, SUBRIP_PREFIX, size);
       return finishWriteSampleData();
@@ -2101,6 +2129,38 @@ public class MatroskaExtractor implements Extractor {
     checkStateNotNull(extractorOutput);
   }
 
+  private byte[] decompressZlib(byte[] compressedData, int length) throws DataFormatException {
+    Inflater inflater = new Inflater();
+    ByteArrayOutputStream outputStream = new ByteArrayOutputStream(length * 2);
+    byte[] buffer = new byte[1024];
+    try {
+      inflater.setInput(compressedData, 0, length);
+      while (!inflater.finished()) {
+        int count = inflater.inflate(buffer);
+        if (count == 0 && inflater.needsInput()) {
+          break;
+        }
+        outputStream.write(buffer, 0, count);
+      }
+    } finally {
+      inflater.end();
+    }
+    return outputStream.toByteArray();
+  }
+
+  private void writeSubtitleSampleData(byte[] sampleData, byte[] samplePrefix) {
+    int size = sampleData.length;
+    int sizeWithPrefix = samplePrefix.length + size;
+    if (subtitleSample.capacity() < sizeWithPrefix) {
+      subtitleSample.reset(Arrays.copyOf(samplePrefix, sizeWithPrefix + size));
+    } else {
+      System.arraycopy(samplePrefix, 0, subtitleSample.getData(), 0, samplePrefix.length);
+    }
+    System.arraycopy(sampleData, 0, subtitleSample.getData(), samplePrefix.length, size);
+    subtitleSample.setPosition(0);
+    subtitleSample.setLimit(sizeWithPrefix);
+  }
+
   /** Passes events through to the outer {@link MatroskaExtractor}. */
   private final class InnerEbmlProcessor implements EbmlProcessor {
 
@@ -2172,6 +2232,7 @@ public class MatroskaExtractor implements Extractor {
     public TrackOutput.@MonotonicNonNull CryptoData cryptoData;
     public byte @MonotonicNonNull [] codecPrivate;
     public @MonotonicNonNull DrmInitData drmInitData;
+    public int contentCompAlgo = 0;
 
     // Video elements.
     public int width = Format.NO_VALUE;

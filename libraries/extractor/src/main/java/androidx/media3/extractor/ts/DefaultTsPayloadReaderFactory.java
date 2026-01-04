@@ -228,7 +228,7 @@ public final class DefaultTsPayloadReaderFactory implements TsPayloadReader.Fact
       case TsExtractor.TS_STREAM_TYPE_AV3A:
         return new PesReader(new Av3aReader(esInfo.language, esInfo.getRoleFlags()));
       case TsExtractor.TS_STREAM_TYPE_PGS:
-        return new PesReader(new PgsReader(esInfo.language, esInfo.getRoleFlags()));
+        return new PesReader(new PgsReader(esInfo.language));
       default:
         return null;
     }

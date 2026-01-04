@@ -15,6 +15,7 @@
  */
 package androidx.media3.datasource.okhttp;
 
+import static androidx.media3.common.C.CONTENT_TYPE_OTHER;
 import static androidx.media3.common.util.Util.castNonNull;
 import static androidx.media3.datasource.HttpUtil.buildRangeRequestHeader;
 import static java.lang.Math.min;
@@ -403,7 +404,7 @@ public class OkHttpDataSource extends BaseDataSource implements HttpDataSource {
       builder.header(header.getKey(), header.getValue());
     }
 
-    boolean force = "127.0.0.1".equals(url.host()) && url.port() == 8089;
+    boolean force = Util.inferContentType(dataSpec.uri) == CONTENT_TYPE_OTHER;
     @Nullable String rangeHeader = buildRangeRequestHeader(position, length, force);
     if (rangeHeader != null) {
       builder.header(HttpHeaders.RANGE, rangeHeader);
