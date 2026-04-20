@@ -19,8 +19,8 @@ import static android.opengl.EGL14.EGL_CONTEXT_CLIENT_VERSION;
 import static android.opengl.GLU.gluErrorString;
 import static android.os.Build.VERSION.SDK_INT;
 import static androidx.annotation.RestrictTo.Scope.LIBRARY_GROUP;
-import static androidx.media3.common.util.Assertions.checkArgument;
-import static androidx.media3.common.util.Assertions.checkState;
+import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Preconditions.checkState;
 
 import android.content.Context;
 import android.content.pm.PackageManager;
@@ -41,6 +41,7 @@ import androidx.annotation.Nullable;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.RestrictTo;
 import androidx.media3.common.C;
+import com.google.common.collect.ImmutableList;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
@@ -56,9 +57,18 @@ public final class GlUtil {
 
   /** Thrown when an OpenGL error occurs. */
   public static final class GlException extends Exception {
+    /** The OpenGL error codes if present, empty if the error is not from the OpenGL engine. */
+    public final ImmutableList<Integer> errorCodes;
+
     /** Creates an instance with the specified error message. */
     public GlException(String message) {
+      this(message, /* errorCodes= */ ImmutableList.of());
+    }
+
+    /** Creates an instance with the specified error message and error codes. */
+    public GlException(String message, List<Integer> errorCodes) {
       super(message);
+      this.errorCodes = ImmutableList.copyOf(errorCodes);
     }
   }
 
@@ -101,6 +111,10 @@ public final class GlUtil {
         EGL14.EGL_STENCIL_SIZE, /* stencilSize= */ 0,
         EGL14.EGL_NONE
       };
+
+  /** Marker value for when no fence sync is set. */
+  // TODO: b/449956776 - Remove once FrameConsumer API is finalized.
+  @ExperimentalApi public static final long GL_FENCE_SYNC_UNSET = -1;
 
   // https://registry.khronos.org/OpenGL-Refpages/es3.0/html/glFenceSync.xhtml
   private static final long GL_FENCE_SYNC_FAILED = 0;
@@ -276,7 +290,7 @@ public final class GlUtil {
             /* unusedMinor */ new int[1],
             /* minorOffset= */ 0),
         "Error in eglInitialize.");
-    checkGlError();
+    checkEglException("Error in getDefaultEglDisplay");
     return eglDisplay;
   }
 
@@ -328,7 +342,7 @@ public final class GlUtil {
               + " version "
               + openGlVersion);
     }
-    checkGlError();
+    checkEglException("Error in createEglContext");
     return eglContext;
   }
 
@@ -496,15 +510,21 @@ public final class GlUtil {
 
   /** Releases the GL sync object if set, suppressing any error. */
   public static void deleteSyncObjectQuietly(long syncObject) {
+    if (syncObject == GL_FENCE_SYNC_UNSET) {
+      return;
+    }
     GLES30.glDeleteSync(syncObject);
   }
 
   /**
    * Ensures that following commands on the current OpenGL context will not be executed until the
-   * sync point has been reached. If {@code syncObject} equals {@code 0}, this does not block the
-   * CPU, and only affects the current OpenGL context. Otherwise, this will block the CPU.
+   * sync point has been reached. If {@code syncObject} equals {@code #GL_FENCE_SYNC_UNSET}, this is
+   * a no-op. This method does not block the CPU.
    */
   public static void awaitSyncObject(long syncObject) throws GlException {
+    if (syncObject == GL_FENCE_SYNC_UNSET) {
+      return;
+    }
     if (syncObject == GL_FENCE_SYNC_FAILED) {
       // Fallback to using glFinish for synchronization when fence creation failed.
       GLES20.glFinish();
@@ -527,6 +547,7 @@ public final class GlUtil {
     StringBuilder errorMessageBuilder = new StringBuilder();
     boolean foundError = false;
     int error;
+    ImmutableList.Builder<Integer> errorCodes = new ImmutableList.Builder<>();
     while ((error = GLES20.glGetError()) != GLES20.GL_NO_ERROR) {
       if (foundError) {
         errorMessageBuilder.append('\n');
@@ -537,9 +558,23 @@ public final class GlUtil {
       }
       errorMessageBuilder.append("glError: ").append(errorString);
       foundError = true;
+      errorCodes.add(error);
     }
     if (foundError) {
-      throw new GlException(errorMessageBuilder.toString());
+      throw new GlException(errorMessageBuilder.toString(), errorCodes.build());
+    }
+  }
+
+  /**
+   * Collects EGL errors that occurred in the last called EGL function and throws a {@link
+   * GlException} with the combined error code.
+   */
+  public static void checkEglException(String errorMessage) throws GlException {
+    int error = EGL14.eglGetError();
+    if (error != EGL14.EGL_SUCCESS) {
+      throw new GlException(
+          errorMessage + ", error code: 0x" + Integer.toHexString(error),
+          /* errorCodes= */ ImmutableList.of(error));
     }
   }
 
@@ -844,6 +879,10 @@ public final class GlUtil {
       EGL14.eglDestroyContext(eglDisplay, eglContext);
       checkEglException("Error destroying context");
     }
+  }
+
+  /** Terminates the {@link EGLDisplay} connection. */
+  public static void terminate(EGLDisplay eglDisplay) throws GlException {
     EGL14.eglReleaseThread();
     checkEglException("Error releasing thread");
     EGL14.eglTerminate(eglDisplay);
@@ -1099,12 +1138,17 @@ public final class GlUtil {
     EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext);
     checkEglException("Error making context current");
     focusFramebufferUsingCurrentContext(framebuffer, width, height);
-  }
-
-  private static void checkEglException(String errorMessage) throws GlException {
-    int error = EGL14.eglGetError();
-    if (error != EGL14.EGL_SUCCESS) {
-      throw new GlException(errorMessage + ", error code: 0x" + Integer.toHexString(error));
+    // When transitioning from a surfaceless context (EGL_NO_SURFACE) to a context with a valid
+    // surface, the GL_DRAW_BUFFER and GL_READ_BUFFER states may still be GL_NONE (per EGL spec for
+    // surfaceless contexts). Explicitly set them to GL_BACK for the default framebuffer to ensure
+    // rendering goes to the bound surface. See https://github.com/androidx/media/issues/2982.
+    if (!eglSurface.equals(EGL14.EGL_NO_SURFACE)
+        && framebuffer == 0
+        && getContextMajorVersion() >= 3) {
+      GLES30.glDrawBuffers(1, new int[] {GLES30.GL_BACK}, 0);
+      checkGlError();
+      GLES30.glReadBuffer(GLES30.GL_BACK);
+      checkGlError();
     }
   }
 }

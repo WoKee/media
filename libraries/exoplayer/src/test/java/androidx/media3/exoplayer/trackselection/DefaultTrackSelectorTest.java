@@ -42,9 +42,11 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.robolectric.Shadows.shadowOf;
 
 import android.content.Context;
 import android.media.Spatializer;
+import android.view.accessibility.CaptioningManager;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
@@ -79,6 +81,7 @@ import com.google.common.collect.ImmutableSet;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import org.junit.After;
 import org.junit.Before;
@@ -115,6 +118,8 @@ public final class DefaultTrackSelectorTest {
       new FakeRendererCapabilities(C.TRACK_TYPE_AUDIO);
   private static final RendererCapabilities IMAGE_CAPABILITIES =
       new FakeRendererCapabilities(C.TRACK_TYPE_IMAGE);
+  private static final RendererCapabilities METADATA_CAPABILITIES =
+      new FakeRendererCapabilities(C.TRACK_TYPE_METADATA);
   private static final RendererCapabilities NO_SAMPLE_CAPABILITIES =
       new FakeRendererCapabilities(C.TRACK_TYPE_NONE);
   private static final RendererCapabilities[] RENDERER_CAPABILITIES =
@@ -140,6 +145,8 @@ public final class DefaultTrackSelectorTest {
       new Format.Builder().setSampleMimeType(MimeTypes.TEXT_VTT).build();
   private static final Format IMAGE_FORMAT =
       new Format.Builder().setSampleMimeType(MimeTypes.IMAGE_PNG).build();
+  private static final Format METADATA_FORMAT =
+      new Format.Builder().setSampleMimeType(MimeTypes.APPLICATION_ID3).build();
 
   private static final TrackGroup VIDEO_TRACK_GROUP = new TrackGroup(VIDEO_FORMAT);
   private static final TrackGroup AUDIO_TRACK_GROUP = new TrackGroup(AUDIO_FORMAT);
@@ -446,7 +453,6 @@ public final class DefaultTrackSelectorTest {
 
   /** Tests that a disabled track type can be enabled again. */
   @Test
-  @SuppressWarnings("deprecation")
   public void selectTracks_withClearedDisabledTrackType_selectsAll() throws ExoPlaybackException {
     trackSelector.setParameters(
         trackSelector
@@ -680,6 +686,50 @@ public final class DefaultTrackSelectorTest {
             periodId,
             TIMELINE);
     assertFixedSelection(result.selections[0], trackGroups, lessRoleFlags);
+  }
+
+  @Test
+  public void
+      selectTracks_withPreferredTextLanguagesAndRoleFlagsFromCaptioningManager_selectsCaptioningTrack()
+          throws Exception {
+    CaptioningManager captioningManager =
+        (CaptioningManager)
+            ApplicationProvider.getApplicationContext()
+                .getSystemService(Context.CAPTIONING_SERVICE);
+    shadowOf(captioningManager).setEnabled(true);
+    shadowOf(captioningManager).setLocale(Locale.JAPANESE);
+    Format audioFormat = AUDIO_FORMAT.buildUpon().setLanguage("fr").build();
+    Format noRoleFlagsDefaultLanguage = TEXT_FORMAT.buildUpon().setLanguage("fr").build();
+    Format noRoleFlagsCaptioningLanguage = TEXT_FORMAT.buildUpon().setLanguage("ja").build();
+    Format captionRoleFlagsDefaultLanguage =
+        TEXT_FORMAT.buildUpon().setRoleFlags(C.ROLE_FLAG_CAPTION).setLanguage("fr").build();
+    Format captionRoleFlagsCaptioningLanguage =
+        TEXT_FORMAT.buildUpon().setRoleFlags(C.ROLE_FLAG_CAPTION).setLanguage("ja").build();
+    TrackGroupArray trackGroups =
+        wrapFormats(
+            audioFormat,
+            noRoleFlagsDefaultLanguage,
+            noRoleFlagsCaptioningLanguage,
+            captionRoleFlagsDefaultLanguage,
+            captionRoleFlagsCaptioningLanguage);
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredTextLanguageAndRoleFlagsToCaptioningManagerSettings()
+            .build());
+
+    TrackSelectorResult result =
+        trackSelector.selectTracks(
+            new RendererCapabilities[] {
+              ALL_AUDIO_FORMAT_SUPPORTED_RENDERER_CAPABILITIES,
+              ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES
+            },
+            trackGroups,
+            periodId,
+            TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, audioFormat);
+    assertFixedSelection(result.selections[1], trackGroups, captionRoleFlagsCaptioningLanguage);
   }
 
   /**
@@ -1388,6 +1438,168 @@ public final class DefaultTrackSelectorTest {
     assertFixedSelection(result.selections[1], trackGroups, defaultEnglish);
   }
 
+  @Test
+  public void selectTracks_withAudioTrackOverride_choosesVideoAndTextTracksWithMatchingLanguage()
+      throws ExoPlaybackException {
+    Format.Builder textBuilder =
+        TEXT_FORMAT.buildUpon().setSelectionFlags(C.SELECTION_FLAG_DEFAULT);
+    Format textEnglish = textBuilder.setLanguage("en").build();
+    Format textGerman = textBuilder.setLanguage("de").build();
+    Format audioEnglish = AUDIO_FORMAT.buildUpon().setLanguage("en").build();
+    Format audioGerman = AUDIO_FORMAT.buildUpon().setLanguage("de").build();
+    Format videoEnglish = VIDEO_FORMAT.buildUpon().setLanguage("en").build();
+    Format videoGerman = VIDEO_FORMAT.buildUpon().setLanguage("de").build();
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {
+          ALL_AUDIO_FORMAT_SUPPORTED_RENDERER_CAPABILITIES,
+          ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES,
+          ALL_VIDEO_FORMAT_EXCEEDED_RENDERER_CAPABILITIES
+        };
+    TrackGroupArray trackGroups =
+        wrapFormats(audioEnglish, audioGerman, textEnglish, textGerman, videoEnglish, videoGerman);
+
+    // Specify override for English audio to assert English text and video is selected and override
+    // for German audio to assert German text and video is selected.
+    trackSelector.setParameters(
+        trackSelector
+            .buildUponParameters()
+            .setOverrideForType(new TrackSelectionOverride(trackGroups.get(0), /* trackIndex= */ 0))
+            .build());
+    TrackSelectorResult resultEnglish =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+    trackSelector.setParameters(
+        trackSelector
+            .buildUponParameters()
+            .setOverrideForType(new TrackSelectionOverride(trackGroups.get(1), /* trackIndex= */ 0))
+            .build());
+    TrackSelectorResult resultGerman =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(resultEnglish.selections[0], trackGroups, audioEnglish);
+    assertFixedSelection(resultEnglish.selections[1], trackGroups, textEnglish);
+    assertFixedSelection(resultEnglish.selections[2], trackGroups, videoEnglish);
+    assertFixedSelection(resultGerman.selections[0], trackGroups, audioGerman);
+    assertFixedSelection(resultGerman.selections[1], trackGroups, textGerman);
+    assertFixedSelection(resultGerman.selections[2], trackGroups, videoGerman);
+  }
+
+  @Test
+  public void selectTracks_withMuxedMetadata_choosesMetadataTracksForSelectedPrimaryTracks()
+      throws ExoPlaybackException {
+    TrackGroup videoGroupA =
+        new TrackGroup(/* id= */ "A", VIDEO_FORMAT.buildUpon().setLabel("A").build());
+    TrackGroup videoGroupB =
+        new TrackGroup(/* id= */ "B", VIDEO_FORMAT.buildUpon().setLabel("B").build());
+    TrackGroup audioGroupC =
+        new TrackGroup(/* id= */ "C", AUDIO_FORMAT.buildUpon().setLabel("C").build());
+    TrackGroup audioGroupD =
+        new TrackGroup(/* id= */ "D", AUDIO_FORMAT.buildUpon().setLabel("D").build());
+    TrackGroup metadataGroupA =
+        new TrackGroup(METADATA_FORMAT.buildUpon().setPrimaryTrackGroupId("A").build());
+    TrackGroup metadataGroupB =
+        new TrackGroup(METADATA_FORMAT.buildUpon().setPrimaryTrackGroupId("B").build());
+    TrackGroup metadataGroupC =
+        new TrackGroup(METADATA_FORMAT.buildUpon().setPrimaryTrackGroupId("C").build());
+    TrackGroup metadataGroupD =
+        new TrackGroup(METADATA_FORMAT.buildUpon().setPrimaryTrackGroupId("D").build());
+    TrackGroup metadataStandalone = new TrackGroup(METADATA_FORMAT);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {
+          AUDIO_CAPABILITIES,
+          VIDEO_CAPABILITIES,
+          METADATA_CAPABILITIES,
+          METADATA_CAPABILITIES,
+          METADATA_CAPABILITIES,
+          METADATA_CAPABILITIES
+        };
+    TrackGroupArray trackGroups =
+        new TrackGroupArray(
+            videoGroupA,
+            videoGroupB,
+            audioGroupC,
+            audioGroupD,
+            metadataGroupA,
+            metadataGroupB,
+            metadataGroupC,
+            metadataGroupD,
+            metadataStandalone);
+
+    trackSelector.setParameters(
+        trackSelector
+            .buildUponParameters()
+            .setPreferredVideoLabels("A")
+            .setPreferredAudioLabels("D")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, audioGroupD.getFormat(0));
+    assertFixedSelection(result.selections[1], trackGroups, videoGroupA.getFormat(0));
+    assertFixedSelection(result.selections[2], trackGroups, metadataGroupA.getFormat(0));
+    assertFixedSelection(result.selections[3], trackGroups, metadataStandalone.getFormat(0));
+    assertFixedSelection(result.selections[4], trackGroups, metadataGroupD.getFormat(0));
+    assertNoSelection(result.selections[5]);
+  }
+
+  @Test
+  public void
+      selectTracks_withMuxedMetadataAndOverridesAndDisabledTracks_choosesMetadataTracksForSelectedPrimaryTracks()
+          throws ExoPlaybackException {
+    TrackGroup videoGroupA =
+        new TrackGroup(/* id= */ "A", VIDEO_FORMAT.buildUpon().setLabel("A").build());
+    TrackGroup videoGroupB =
+        new TrackGroup(/* id= */ "B", VIDEO_FORMAT.buildUpon().setLabel("B").build());
+    TrackGroup audioGroupC =
+        new TrackGroup(/* id= */ "C", AUDIO_FORMAT.buildUpon().setLabel("C").build());
+    TrackGroup audioGroupD =
+        new TrackGroup(/* id= */ "D", AUDIO_FORMAT.buildUpon().setLabel("D").build());
+    TrackGroup metadataGroupA =
+        new TrackGroup(METADATA_FORMAT.buildUpon().setPrimaryTrackGroupId("A").build());
+    TrackGroup metadataGroupB =
+        new TrackGroup(METADATA_FORMAT.buildUpon().setPrimaryTrackGroupId("B").build());
+    TrackGroup metadataGroupC =
+        new TrackGroup(METADATA_FORMAT.buildUpon().setPrimaryTrackGroupId("C").build());
+    TrackGroup metadataGroupD =
+        new TrackGroup(METADATA_FORMAT.buildUpon().setPrimaryTrackGroupId("D").build());
+    TrackGroup metadataStandalone = new TrackGroup(METADATA_FORMAT);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {
+          AUDIO_CAPABILITIES,
+          VIDEO_CAPABILITIES,
+          METADATA_CAPABILITIES,
+          METADATA_CAPABILITIES,
+          METADATA_CAPABILITIES,
+          METADATA_CAPABILITIES
+        };
+    TrackGroupArray trackGroups =
+        new TrackGroupArray(
+            videoGroupA,
+            videoGroupB,
+            audioGroupC,
+            audioGroupD,
+            metadataGroupA,
+            metadataGroupB,
+            metadataGroupC,
+            metadataGroupD,
+            metadataStandalone);
+
+    trackSelector.setParameters(
+        trackSelector
+            .buildUponParameters()
+            .setOverrideForType(new TrackSelectionOverride(videoGroupB, /* trackIndex= */ 0))
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertNoSelection(result.selections[0]);
+    assertFixedSelection(result.selections[1], trackGroups, videoGroupB.getFormat(0));
+    assertFixedSelection(result.selections[2], trackGroups, metadataStandalone.getFormat(0));
+    assertFixedSelection(result.selections[3], trackGroups, metadataGroupB.getFormat(0));
+    assertNoSelection(result.selections[4]);
+    assertNoSelection(result.selections[5]);
+  }
+
   /**
    * Tests that the default track selector will select a text track with undetermined language if no
    * text track with the preferred language is available but {@link
@@ -1518,6 +1730,181 @@ public final class DefaultTrackSelectorTest {
             periodId,
             TIMELINE);
     assertFixedSelection(result.selections[0], trackGroups, lessRoleFlags);
+  }
+
+  @Test
+  public void selectTracks_withPreferredTextLabel_selectsLabeledTrack() throws Exception {
+    Format unlabeledText = TEXT_FORMAT.buildUpon().setLabel(null).build();
+    Format labeledText = TEXT_FORMAT.buildUpon().setLabel("commentary").build();
+    TrackGroupArray trackGroups = wrapFormats(unlabeledText, labeledText);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters.buildUpon().setPreferredTextLabels("commentary").build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, labeledText);
+  }
+
+  @Test
+  public void selectTracks_withMultiplePreferredTextLabels_selectsHigherPriorityLabeledTrack()
+      throws Exception {
+    Format lowPriorityLabeledText = TEXT_FORMAT.buildUpon().setLabel("low_priority").build();
+    Format highPriorityLabeledText = TEXT_FORMAT.buildUpon().setLabel("high_priority").build();
+    TrackGroupArray trackGroups = wrapFormats(lowPriorityLabeledText, highPriorityLabeledText);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredTextLabels("high_priority", "low_priority")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, highPriorityLabeledText);
+  }
+
+  @Test
+  public void selectTracks_roleFlagsPreferredOverTextLabel() throws Exception {
+    Format labeledButWrongRoleFlag =
+        TEXT_FORMAT
+            .buildUpon()
+            .setRoleFlags(C.ROLE_FLAG_SUPPLEMENTARY)
+            .setLabel("commentary")
+            .build();
+    Format unlabeledButRightRoleFlag =
+        TEXT_FORMAT.buildUpon().setRoleFlags(C.ROLE_FLAG_CAPTION).setLabel(null).build();
+    TrackGroupArray trackGroups = wrapFormats(labeledButWrongRoleFlag, unlabeledButRightRoleFlag);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredTextRoleFlags(C.ROLE_FLAG_CAPTION)
+            .setPreferredTextLabels("commentary")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, unlabeledButRightRoleFlag);
+  }
+
+  @Test
+  public void selectTracks_noSelectionWhenLanguageMismatchDespiteLabelMatch() throws Exception {
+    Format labeledButWrongLanguage =
+        TEXT_FORMAT.buildUpon().setLanguage("deu").setLabel("commentary").build();
+    TrackGroupArray trackGroups = wrapFormats(labeledButWrongLanguage);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredTextLanguage("eng")
+            .setPreferredTextLabels("commentary")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertNoSelection(result.selections[0]);
+  }
+
+  @Test
+  public void selectTracks_selectTextByDefault_selectsTrackWhenNoOtherPreferencesSet()
+      throws Exception {
+    // A text track with no language, role, or selection flags.
+    Format plainTextFormat = TEXT_FORMAT.buildUpon().setLanguage(null).build();
+    TrackGroupArray trackGroups = wrapFormats(plainTextFormat);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    // With default parameters, the track is not selected as it matches no preference.
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertNoSelection(result.selections[0]);
+
+    // When selectTextByDefault is true, the track is selected.
+    trackSelector.setParameters(defaultParameters.buildUpon().setSelectTextByDefault(true).build());
+    result = trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, plainTextFormat);
+  }
+
+  @Test
+  public void selectTracks_selectTextByDefault_selectsTrackEvenIfOtherPreferencesDoNotMatch()
+      throws Exception {
+    // A text track with a language, but no role or selection flags.
+    Format frenchTextFormat = TEXT_FORMAT.buildUpon().setLanguage("fra").build();
+    TrackGroupArray trackGroups = wrapFormats(frenchTextFormat);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    // With preferred language "eng", the track is not selected.
+    trackSelector.setParameters(defaultParameters.buildUpon().setPreferredTextLanguage("eng"));
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+    assertNoSelection(result.selections[0]);
+
+    // When selectTextByDefault is true, the track is selected even if the preferred language does
+    // not match.
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredTextLanguage("eng")
+            .setSelectTextByDefault(true)
+            .build());
+    result = trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, frenchTextFormat);
+  }
+
+  @Test
+  public void selectTracks_selectTextByDefault_stillPrefersLanguageMatch() throws Exception {
+    Format otherLanguageFormat = TEXT_FORMAT.buildUpon().setLanguage("deu").build();
+    Format preferredLanguageFormat = TEXT_FORMAT.buildUpon().setLanguage("eng").build();
+    TrackGroupArray trackGroups = wrapFormats(otherLanguageFormat, preferredLanguageFormat);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    // With selectTextByDefault=true, both tracks are eligible, but the one matching the
+    // preferred language should be chosen.
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setSelectTextByDefault(true)
+            .setPreferredTextLanguage("eng")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, preferredLanguageFormat);
+  }
+
+  @Test
+  public void selectTracks_selectTextByDefault_hasNoEffectIfTextTrackTypeIsDisabled()
+      throws Exception {
+    Format plainTextFormat = TEXT_FORMAT.buildUpon().setLanguage(null).build();
+    TrackGroupArray trackGroups = wrapFormats(plainTextFormat);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_TEXT_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    // Even with selectTextByDefault=true, no track is selected if the text type is disabled.
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setSelectTextByDefault(true)
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertNoSelection(result.selections[0]);
   }
 
   /**
@@ -2520,6 +2907,61 @@ public final class DefaultTrackSelectorTest {
   }
 
   @Test
+  public void selectTracks_withPreferredVideoLabel_selectsLabeledTrack() throws Exception {
+    Format unlabeledVideo = VIDEO_FORMAT.buildUpon().setLabel(null).build();
+    Format labeledVideo = VIDEO_FORMAT.buildUpon().setLabel("commentary").build();
+    TrackGroupArray trackGroups = wrapFormats(unlabeledVideo, labeledVideo);
+    RendererCapabilities[] rendererCapabilities = new RendererCapabilities[] {VIDEO_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters.buildUpon().setPreferredVideoLabels("commentary").build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, labeledVideo);
+  }
+
+  @Test
+  public void selectTracks_withMultiplePreferredVideoLabels_selectsHigherPriorityLabeledTrack()
+      throws Exception {
+    Format lowPriorityLabeledVideo = VIDEO_FORMAT.buildUpon().setLabel("low_priority").build();
+    Format highPriorityLabeledVideo = VIDEO_FORMAT.buildUpon().setLabel("high_priority").build();
+    TrackGroupArray trackGroups = wrapFormats(lowPriorityLabeledVideo, highPriorityLabeledVideo);
+    RendererCapabilities[] rendererCapabilities = new RendererCapabilities[] {VIDEO_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredVideoLabels("high_priority", "low_priority")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, highPriorityLabeledVideo);
+  }
+
+  @Test
+  public void selectTracks_videoRoleFlagsPreferredOverVideoLabel() throws Exception {
+    Format labeledButWrongRoleFlag =
+        VIDEO_FORMAT.buildUpon().setRoleFlags(C.ROLE_FLAG_DUB).setLabel("commentary").build();
+    Format unlabeledButRightRoleFlag =
+        VIDEO_FORMAT.buildUpon().setRoleFlags(C.ROLE_FLAG_COMMENTARY).setLabel(null).build();
+    TrackGroupArray trackGroups = wrapFormats(labeledButWrongRoleFlag, unlabeledButRightRoleFlag);
+    RendererCapabilities[] rendererCapabilities = new RendererCapabilities[] {VIDEO_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredVideoRoleFlags(C.ROLE_FLAG_COMMENTARY)
+            .setPreferredVideoLabels("commentary")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, unlabeledButRightRoleFlag);
+  }
+
+  @Test
   public void selectTracks_withViewportSize_selectsTrackWithinViewport() throws Exception {
     Format formatH264Low =
         new Format.Builder()
@@ -3046,6 +3488,68 @@ public final class DefaultTrackSelectorTest {
     assertFixedSelection(result.selections[0], trackGroups, formatAac);
   }
 
+  @Test
+  public void selectTracks_withPreferredAudioLabel_selectsLabeledTrack() throws Exception {
+    Format unlabeledAudio = AUDIO_FORMAT.buildUpon().setLabel(null).build();
+    Format labeledAudio = AUDIO_FORMAT.buildUpon().setLabel("commentary").build();
+    TrackGroupArray trackGroups = wrapFormats(unlabeledAudio, labeledAudio);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_AUDIO_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters.buildUpon().setPreferredAudioLabels("commentary").build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, labeledAudio);
+  }
+
+  @Test
+  public void selectTracks_withMultiplePreferredAudioLabels_selectsHigherPriorityLabeledTrack()
+      throws Exception {
+    Format lowPriorityLabeledAudio = AUDIO_FORMAT.buildUpon().setLabel("low_priority").build();
+    Format highPriorityLabeledAudio = AUDIO_FORMAT.buildUpon().setLabel("high_priority").build();
+    TrackGroupArray trackGroups = wrapFormats(lowPriorityLabeledAudio, highPriorityLabeledAudio);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_AUDIO_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredAudioLabels("high_priority", "low_priority")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, highPriorityLabeledAudio);
+  }
+
+  @Test
+  public void selectTracks_roleFlagPreferredOverAudioLabel() throws Exception {
+    Format labeledButWrongRoleFlag =
+        AUDIO_FORMAT
+            .buildUpon()
+            .setRoleFlags(C.ROLE_FLAG_DESCRIBES_VIDEO)
+            .setLabel("commentary")
+            .build();
+    Format unlabeledButRightRoleFlag =
+        AUDIO_FORMAT.buildUpon().setRoleFlags(C.ROLE_FLAG_CAPTION).setLabel(null).build();
+    TrackGroupArray trackGroups = wrapFormats(labeledButWrongRoleFlag, unlabeledButRightRoleFlag);
+    RendererCapabilities[] rendererCapabilities =
+        new RendererCapabilities[] {ALL_AUDIO_FORMAT_SUPPORTED_RENDERER_CAPABILITIES};
+
+    trackSelector.setParameters(
+        defaultParameters
+            .buildUpon()
+            .setPreferredAudioRoleFlags(C.ROLE_FLAG_CAPTION)
+            .setPreferredAudioLabels("commentary")
+            .build());
+    TrackSelectorResult result =
+        trackSelector.selectTracks(rendererCapabilities, trackGroups, periodId, TIMELINE);
+
+    assertFixedSelection(result.selections[0], trackGroups, unlabeledButRightRoleFlag);
+  }
+
   /**
    * Tests that the track selector will select a group with a single video track with a 'reasonable'
    * frame rate instead of a larger groups of tracks all with lower frame rates (the larger group of
@@ -3436,9 +3940,11 @@ public final class DefaultTrackSelectorTest {
             /* viewportHeight= */ 9,
             /* viewportOrientationMayChange= */ true)
         .setPreferredVideoMimeTypes(MimeTypes.VIDEO_AV1, MimeTypes.VIDEO_H264)
+        .setPreferredVideoLabels("video_label_1", "video_label_2")
         // Audio
         .setPreferredAudioLanguages("zh", "jp")
         .setPreferredAudioRoleFlags(C.ROLE_FLAG_COMMENTARY)
+        .setPreferredAudioLabels("audio_label_1", "audio_label_2")
         .setMaxAudioChannelCount(10)
         .setMaxAudioBitrate(11)
         .setExceedAudioConstraintsIfNecessary(false)
@@ -3449,10 +3955,12 @@ public final class DefaultTrackSelectorTest {
         .setPreferredAudioMimeTypes(MimeTypes.AUDIO_AC3, MimeTypes.AUDIO_E_AC3)
         .setConstrainAudioChannelCountToDeviceCapabilities(false)
         // Text
+        .setSelectTextByDefault(true)
         .setPreferredTextLanguages("de", "en")
         .setPreferredTextRoleFlags(C.ROLE_FLAG_CAPTION)
         .setSelectUndeterminedTextLanguage(true)
         .setIgnoredTextSelectionFlags(C.SELECTION_FLAG_AUTOSELECT)
+        .setPreferredTextLabels("text_label_1", "text_label_2")
         // General
         .setForceLowestBitrate(false)
         .setForceHighestSupportedBitrate(true)

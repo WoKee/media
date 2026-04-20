@@ -24,6 +24,7 @@ import android.os.HandlerThread;
 import androidx.annotation.IntDef;
 import androidx.annotation.Nullable;
 import androidx.media3.common.MimeTypes;
+import androidx.media3.common.util.ExperimentalApi;
 import androidx.media3.common.util.Log;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.common.util.Util;
@@ -72,7 +73,7 @@ public final class DefaultMediaCodecAdapterFactory implements MediaCodecAdapter.
   @Deprecated
   public DefaultMediaCodecAdapterFactory() {
     asynchronousMode = MODE_DEFAULT;
-    asyncCryptoFlagEnabled = false;
+    asyncCryptoFlagEnabled = true;
     context = null;
     callbackThreadSupplier = null;
     queueingThreadSupplier = null;
@@ -101,7 +102,7 @@ public final class DefaultMediaCodecAdapterFactory implements MediaCodecAdapter.
       @Nullable Supplier<HandlerThread> queueingThreadSupplier) {
     this.context = context;
     asynchronousMode = MODE_DEFAULT;
-    asyncCryptoFlagEnabled = false;
+    asyncCryptoFlagEnabled = true;
     this.callbackThreadSupplier = callbackThreadSupplier;
     this.queueingThreadSupplier = queueingThreadSupplier;
   }
@@ -138,6 +139,7 @@ public final class DefaultMediaCodecAdapterFactory implements MediaCodecAdapter.
    * in a future release.
    */
   @CanIgnoreReturnValue
+  @ExperimentalApi // TODO: b/470368123 - Remove method once flag usage once safe.
   public DefaultMediaCodecAdapterFactory experimentalSetAsyncCryptoFlagEnabled(
       boolean enableAsyncCryptoFlag) {
     asyncCryptoFlagEnabled = enableAsyncCryptoFlag;
@@ -147,9 +149,8 @@ public final class DefaultMediaCodecAdapterFactory implements MediaCodecAdapter.
   @Override
   public MediaCodecAdapter createAdapter(MediaCodecAdapter.Configuration configuration)
       throws IOException {
-    if (SDK_INT >= 23
-        && (asynchronousMode == MODE_ENABLED
-            || (asynchronousMode == MODE_DEFAULT && shouldUseAsynchronousAdapterInDefaultMode()))) {
+    if (asynchronousMode == MODE_ENABLED
+        || (asynchronousMode == MODE_DEFAULT && shouldUseAsynchronousAdapterInDefaultMode())) {
       int trackType = MimeTypes.getTrackType(configuration.format.sampleMimeType);
       Log.i(
           TAG,
