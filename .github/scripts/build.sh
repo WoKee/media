@@ -1,8 +1,8 @@
 #!/bin/bash
 set -eux
 
-echo $ANDROID_NDK_HOME
-echo $NDK_PATH
+echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+echo "NDK_PATH=$NDK_PATH"
 
 FFMPEG_MODULE_PATH="${GITHUB_WORKSPACE}/libraries/decoder_ffmpeg/src/main"
 export MEDIA3_PATH="${GITHUB_WORKSPACE}"
@@ -26,54 +26,58 @@ echo "Building ArcVideo AV3A SDK for all architectures..."
 AV3A_SRC="${FFMPEG_SRC}/dependency/avs3a"
 AV3A_BASE="${FFMPEG_SRC}/android-libs/avs3a"
 TOOLCHAIN="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-JOBS=$(nproc 2> /dev/null || echo 4)
+SYSROOT="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
 
-# Collect all .c source files
-AV3A_SRCS=$(ls "${AV3A_SRC}/src/"*.c)
+# Verify paths
+echo "AV3A_SRC=${AV3A_SRC}"
+ls "${AV3A_SRC}/src/"
+ls "${AV3A_SRC}/include/"
+echo "TOOLCHAIN=${TOOLCHAIN}"
+ls "${TOOLCHAIN}/aarch64-linux-android21-clang"
 
-# Architecture configurations: "arch|target|cflags"
-ARCH_CONFIGS="
-armeabi-v7a|armv7a-linux-androideabi21|-march=armv7-a -mfloat-abi=softfp
-arm64-v8a|aarch64-linux-android21|
-x86|i686-linux-android21|
-x86_64|x86_64-linux-android21|
-"
+build_av3a_for_arch() {
+    local arch="$1"
+    local target="$2"
+    local opt_cflags="$3"
 
-for entry in ${ARCH_CONFIGS}; do
-    IFS='|' read -r arch target opt_cflags <<< "${entry}"
-    [ -z "${arch}" ] && continue
+    echo "=== Building AV3A for ${arch} (target: ${target}) ==="
+    local prefix="${AV3A_BASE}/${arch}"
+    mkdir -p "${prefix}/include" "${prefix}/lib"
 
-    echo "=== Building AV3A for ${arch} ==="
-    AV3A_PREFIX="${AV3A_BASE}/${arch}"
-    mkdir -p "${AV3A_PREFIX}/include" "${AV3A_PREFIX}/lib"
-
-    CC="${TOOLCHAIN}/${target}-clang"
-    SYSROOT="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+    local cc="${TOOLCHAIN}/${target}-clang"
 
     # Compile all source files
-    OBJ_FILES=""
-    for src in ${AV3A_SRCS}; do
-        obj="${AV3A_PREFIX}/lib/$(basename ${src} .c).o"
-        echo "  Compiling $(basename ${src})..."
-        ${CC} -c "${src}" -o "${obj}" \
+    local obj_list="${prefix}/lib/objs.txt"
+    > "${obj_list}"
+    for src in "${AV3A_SRC}/src/"*.c; do
+        local base
+        base=$(basename "${src}" .c)
+        local obj="${prefix}/lib/${base}.o"
+        echo "  CC ${base}.c"
+        "${cc}" -c "${src}" -o "${obj}" \
             --sysroot="${SYSROOT}" \
             -I"${AV3A_SRC}/include" -I"${AV3A_SRC}/src" \
             ${opt_cflags} -fPIC -O2
-        OBJ_FILES="${OBJ_FILES} ${obj}"
+        echo "${obj}" >> "${obj_list}"
     done
 
     # Create static library
-    echo "  Creating libarcdav3a.a..."
-    ${TOOLCHAIN}/llvm-ar rcs "${AV3A_PREFIX}/lib/libarcdav3a.a" ${OBJ_FILES}
+    echo "  AR libarcdav3a.a"
+    "${TOOLCHAIN}/llvm-ar" rcs "${prefix}/lib/libarcdav3a.a" $(cat "${obj_list}")
 
     # Copy headers
-    cp "${AV3A_SRC}/include/"*.h "${AV3A_PREFIX}/include/"
+    cp "${AV3A_SRC}/include/"*.h "${prefix}/include/"
 
-    # Clean up object files
-    rm -f ${OBJ_FILES}
+    # Clean object files
+    rm -f $(cat "${obj_list}") "${obj_list}"
 
-    echo "  AV3A for ${arch} done: $(ls -lh ${AV3A_PREFIX}/lib/libarcdav3a.a)"
-done
+    echo "  Done: $(ls -lh "${prefix}/lib/libarcdav3a.a")"
+}
+
+build_av3a_for_arch "armeabi-v7a" "armv7a-linux-androideabi21" "-march=armv7-a -mfloat-abi=softfp"
+build_av3a_for_arch "arm64-v8a"  "aarch64-linux-android21"  ""
+build_av3a_for_arch "x86"       "i686-linux-android21"      ""
+build_av3a_for_arch "x86_64"    "x86_64-linux-android21"    ""
 
 echo "All AV3A builds complete!"
 
@@ -81,8 +85,6 @@ echo "All AV3A builds complete!"
 # 3. Build FFmpeg (all architectures)
 # ============================================================
 echo "Build FFmpeg"
-echo $ANDROID_NDK_HOME
-echo $NDK_PATH
 
 ANDROID_ABI=21
 HOST_PLATFORM="linux-x86_64"
@@ -93,9 +95,7 @@ export ENABLED_EXTERNALS="libarcdav3a"
 
 echo "NDK path is ${NDK_PATH}"
 echo "FFMPEG_MODULE_PATH is ${FFMPEG_MODULE_PATH}"
-echo "Host platform is ${HOST_PLATFORM}"
-echo "ANDROID_ABI is ${ANDROID_ABI}"
-echo "Enabled decoders are ${ENABLED_DECODERS[@]}"
+echo "Enabled decoders: ${ENABLED_DECODERS[*]}"
 echo "Enabled externals: ${ENABLED_EXTERNALS}"
 
 cd "${FFMPEG_MODULE_PATH}/jni"
