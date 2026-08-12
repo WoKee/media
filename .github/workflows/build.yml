@@ -58,9 +58,13 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          echo "build ffmpeg"
-          bash ${{ github.workspace }}/.github/scripts/build.sh
-          echo "Build Success"
+          set -x
+          echo "NDK_PATH=${NDK_PATH}"
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"
+          ls -la "${NDK_PATH}/" || echo "NDK_PATH dir not found"
+          ls "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/" | head -5 || echo "toolchain not found"
+          echo "---"
+          bash -x ${{ github.workspace }}/.github/scripts/build.sh 2>&1 | tee /tmp/build.log; exit ${PIPESTATUS[0]}
 
       # Upload FFmpeg static libs
       - name: Upload FFmpeg Static Libs
@@ -99,5 +103,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: build-logs
-          path: gradle-build.log
+          path: |
+            gradle-build.log
+            /tmp/build.log
           retention-days: 7
