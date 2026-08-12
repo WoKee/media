@@ -45,12 +45,17 @@ jobs:
           NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
+          set -x
           export FFMPEG_MODULE_PATH="$(pwd)/libraries/decoder_ffmpeg/src/main"
           export HOST_PLATFORM="linux-x86_64"
           export ANDROID_ABI=21
+          echo "NDK_PATH=${NDK_PATH}"
+          echo "FFMPEG_MODULE_PATH=${FFMPEG_MODULE_PATH}"
+          ls -la "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/" | head -10
+          ls -la "${FFMPEG_MODULE_PATH}/jni/ffmpeg/" | head -10
           cd "${FFMPEG_MODULE_PATH}/jni"
           chmod +x build_ffmpeg.sh
-          bash build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK_PATH}" "${HOST_PLATFORM}" "${ANDROID_ABI}" vorbis opus flac
+          bash -x build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK_PATH}" "${HOST_PLATFORM}" "${ANDROID_ABI}" vorbis opus flac 2>&1 | tee /tmp/ffmpeg-build.log; exit ${PIPESTATUS[0]}
 
       - name: Copy .a files to jniLibs
         run: |
@@ -84,4 +89,13 @@ jobs:
           name: media3-aars
           path: |
             libraries/*/buildout/outputs/aar/lib-*-release.aar
+          retention-days: 7
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-build-logs
+          path: |
+            /tmp/ffmpeg-build.log
           retention-days: 7
