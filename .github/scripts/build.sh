@@ -19,27 +19,63 @@ cd ffmpeg
 FFMPEG_SRC="$(pwd)"
 
 # ============================================================
-# 2. Build ArcVideo AV3A SDK (dependency/avs3a)
+# 2. Build ArcVideo AV3A SDK for all 4 Android architectures
 # ============================================================
-echo "Building ArcVideo AV3A SDK..."
-AV3A_PREFIX="${FFMPEG_SRC}/android-libs/avs3a"
-mkdir -p "${AV3A_PREFIX}"
+echo "Building ArcVideo AV3A SDK for all architectures..."
 
-cd "${FFMPEG_SRC}/dependency/avs3a"
-cmake -B build -DCMAKE_INSTALL_PREFIX="${AV3A_PREFIX}" -DCMAKE_C_COMPILER="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
-cmake --build build -j$(nproc)
-cmake --install build
+AV3A_SRC="${FFMPEG_SRC}/dependency/avs3a"
+AV3A_BASE="${FFMPEG_SRC}/android-libs/avs3a"
+TOOLCHAIN="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+JOBS=$(nproc 2> /dev/null || echo 4)
 
-echo "AV3A SDK installed to: ${AV3A_PREFIX}"
-ls -lh "${AV3A_PREFIX}/include/"
-ls -lh "${AV3A_PREFIX}/lib/"
+# Collect all .c source files
+AV3A_SRCS=$(ls "${AV3A_SRC}/src/"*.c)
 
-# Set PKG_CONFIG_PATH so FFmpeg configure can find arcdav3a
-export PKG_CONFIG_PATH="${AV3A_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-echo "PKG_CONFIG_PATH: ${PKG_CONFIG_PATH}"
+# Architecture configurations: "arch|target|cflags"
+ARCH_CONFIGS="
+armeabi-v7a|armv7a-linux-androideabi21|-march=armv7-a -mfloat-abi=softfp
+arm64-v8a|aarch64-linux-android21|
+x86|i686-linux-android21|
+x86_64|x86_64-linux-android21|
+"
 
-# Verify pkg-config can find arcdav3a
-pkg-config --libs --cflags arcdav3a || echo "WARNING: pkg-config cannot find arcdav3a"
+for entry in ${ARCH_CONFIGS}; do
+    IFS='|' read -r arch target opt_cflags <<< "${entry}"
+    [ -z "${arch}" ] && continue
+
+    echo "=== Building AV3A for ${arch} ==="
+    AV3A_PREFIX="${AV3A_BASE}/${arch}"
+    mkdir -p "${AV3A_PREFIX}/include" "${AV3A_PREFIX}/lib"
+
+    CC="${TOOLCHAIN}/${target}-clang"
+    SYSROOT="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+
+    # Compile all source files
+    OBJ_FILES=""
+    for src in ${AV3A_SRCS}; do
+        obj="${AV3A_PREFIX}/lib/$(basename ${src} .c).o"
+        echo "  Compiling $(basename ${src})..."
+        ${CC} -c "${src}" -o "${obj}" \
+            --sysroot="${SYSROOT}" \
+            -I"${AV3A_SRC}/include" -I"${AV3A_SRC}/src" \
+            ${opt_cflags} -fPIC -O2
+        OBJ_FILES="${OBJ_FILES} ${obj}"
+    done
+
+    # Create static library
+    echo "  Creating libarcdav3a.a..."
+    ${TOOLCHAIN}/llvm-ar rcs "${AV3A_PREFIX}/lib/libarcdav3a.a" ${OBJ_FILES}
+
+    # Copy headers
+    cp "${AV3A_SRC}/include/"*.h "${AV3A_PREFIX}/include/"
+
+    # Clean up object files
+    rm -f ${OBJ_FILES}
+
+    echo "  AV3A for ${arch} done: $(ls -lh ${AV3A_PREFIX}/lib/libarcdav3a.a)"
+done
+
+echo "All AV3A builds complete!"
 
 # ============================================================
 # 3. Build FFmpeg (all architectures)
