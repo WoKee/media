@@ -34,17 +34,25 @@ jobs:
         run: |
           set -x
           FFMPEG_MODULE_PATH="${GITHUB_WORKSPACE}/libraries/decoder_ffmpeg/src/main"
-          NDK_PATH="${ANDROID_NDK_HOME:-${ANDROID_SDK_ROOT}/ndk/27.2.12479018}"
+          
+          # Find NDK
+          NDK_PATH=""
+          if [ -n "${ANDROID_NDK_HOME}" ]; then
+            NDK_PATH="${ANDROID_NDK_HOME}"
+          elif [ -n "${ANDROID_SDK_ROOT}" ]; then
+            NDK_PATH=$(find "${ANDROID_SDK_ROOT}/ndk" -maxdepth 1 -type d | sort -V | tail -1)
+          fi
+          echo "Found NDK at: ${NDK_PATH}"
           
           # Clone FFmpeg
           cd "${FFMPEG_MODULE_PATH}/jni"
           rm -rf ffmpeg
           git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg
           
-          # Verify NDK
-          echo "NDK_PATH=${NDK_PATH}"
-          ls "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang" || echo "clang not found at expected path"
-          which armv7a-linux-androideabi21-clang || echo "clang not in PATH"
+          # Verify NDK tools
+          CLANG_PATH="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
+          echo "Checking clang at: ${CLANG_PATH}"
+          ls -la "${CLANG_PATH}" || echo "clang NOT found"
           
           # Build FFmpeg
           chmod +x build_ffmpeg.sh
