@@ -50,7 +50,7 @@ jobs:
             "${NDK_PATH}" \
             "linux-x86_64" \
             21 \
-            vorbis opus flac av3a ac3 eac3 truehd dca aac mp3 alac amrnb amrwb pcm_mulaw pcm_alaw
+            vorbis opus flac ac3 eac3 truehd dca aac mp3 alac amrnb amrwb pcm_mulaw pcm_alaw
 
       - name: Verify FFmpeg static libs
         run: |
