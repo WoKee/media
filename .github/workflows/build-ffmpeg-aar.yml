@@ -31,17 +31,20 @@ jobs:
           add-to-path: true
 
       - name: Build FFmpeg and AARs
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -x
           FFMPEG_MODULE_PATH="${GITHUB_WORKSPACE}/libraries/decoder_ffmpeg/src/main"
+          NDK_PATH="${ANDROID_NDK_HOME:-${ANDROID_SDK_ROOT}/ndk/27.2.12479018}"
           
           # Clone FFmpeg
           cd "${FFMPEG_MODULE_PATH}/jni"
           rm -rf ffmpeg
           git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg
+          
+          # Verify NDK
+          echo "NDK_PATH=${NDK_PATH}"
+          ls "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang" || echo "clang not found at expected path"
+          which armv7a-linux-androideabi21-clang || echo "clang not in PATH"
           
           # Build FFmpeg
           chmod +x build_ffmpeg.sh
