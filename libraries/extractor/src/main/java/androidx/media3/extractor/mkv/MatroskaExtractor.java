@@ -516,6 +516,12 @@ public class MatroskaExtractor implements Extractor {
   private long seekPositionAfterReadingTracks = C.INDEX_UNSET;
   private boolean readTracks;
   private long clusterTimecodeUs = C.TIME_UNSET;
+  // Fallback seek path used only when the declared Cues position lies outside the file
+  // (e.g. truncated download). Normal files are not affected by these fields.
+  private boolean cuesPositionInvalidated;
+  private boolean awaitingClusterSync;
+  private long inputLength = C.LENGTH_UNSET;
+  private final byte[] clusterSyncScratch = new byte[4];
 
   // Reading state.
   private boolean haveOutputSample;
@@ -640,6 +646,11 @@ public class MatroskaExtractor implements Extractor {
     currentCueTrackNumber = C.INDEX_UNSET;
     currentCueClusterPosition = C.INDEX_UNSET;
     currentCueRelativePosition = C.INDEX_UNSET;
+    // If we are using the proportional fallback seek map (truncated file), the requested byte
+    // position is an estimate that almost certainly does not land on a Cluster boundary. Trigger
+    // a byte-level scan for the next Cluster ID before resuming EBML parsing. This only affects
+    // files where the declared Cues position was invalid; normal files are not impacted.
+    awaitingClusterSync = cuesPositionInvalidated;
     // To prevent creating duplicate cue points on a re-parse, clear any existing cue data if the
     // seek map has not yet been sent. Once sent, the cue data is considered final, and subsequent
     // Cues elements will be ignored by the parsing logic.
@@ -660,8 +671,28 @@ public class MatroskaExtractor implements Extractor {
   public final int read(ExtractorInput input, PositionHolder seekPosition) throws IOException {
     haveOutputSample = false;
     boolean continueReading = true;
+    inputLength = input.getLength();
     while (continueReading && !haveOutputSample) {
+      // After a seek into a truncated file, the byte position is a proportional estimate and may
+      // not land on a Cluster boundary. Scan forward byte-by-byte for the next Cluster ID before
+      // letting the EBML reader take over.
+      if (awaitingClusterSync) {
+        if (!resyncToNextCluster(input, clusterSyncScratch)) {
+          return Extractor.RESULT_END_OF_INPUT;
+        }
+        awaitingClusterSync = false;
+      }
       continueReading = reader.read(input);
+      // If the cues position is beyond the end of the file, the file is likely truncated.
+      // Disable seeking to cues to avoid a subsequent read error, and remember that we did so
+      // so we can later expose a fallback proportional seek map.
+      if (seekForCuesEnabled
+          && cuesContentPosition != C.INDEX_UNSET
+          && input.getLength() != C.LENGTH_UNSET
+          && cuesContentPosition >= input.getLength()) {
+        cuesContentPosition = C.INDEX_UNSET;
+        cuesPositionInvalidated = true;
+      }
       if (continueReading
           && (maybeSeekForTracks(seekPosition, input.getPosition())
               || maybeSeekForCues(seekPosition, input.getPosition()))) {
@@ -677,6 +708,30 @@ public class MatroskaExtractor implements Extractor {
       return Extractor.RESULT_END_OF_INPUT;
     }
     return Extractor.RESULT_CONTINUE;
+  }
+
+  /**
+   * Scans the input byte-by-byte for the 4-byte Cluster element ID (0x1F43B675) and leaves the
+   * input read position exactly at the Cluster ID start so that the EBML reader can parse it
+   * normally on the next call.
+   *
+   * @return {@code true} if a Cluster ID was found, {@code false} if end of input was reached.
+   */
+  private static boolean resyncToNextCluster(ExtractorInput input, byte[] scratch)
+      throws IOException {
+    while (true) {
+      input.resetPeekPosition();
+      if (!input.peekFully(scratch, 0, 4, /* allowEndOfInput= */ true)) {
+        return false;
+      }
+      if ((scratch[0] & 0xFF) == 0x1F
+          && (scratch[1] & 0xFF) == 0x43
+          && (scratch[2] & 0xFF) == 0xB6
+          && (scratch[3] & 0xFF) == 0x75) {
+        return true;
+      }
+      input.skipFully(1);
+    }
   }
 
   /**
@@ -869,6 +924,20 @@ public class MatroskaExtractor implements Extractor {
           if (seekForCuesEnabled && cuesContentPosition != C.INDEX_UNSET) {
             // We know where the Cues element is located. Seek to request it.
             seekForCues = true;
+          } else if (cuesPositionInvalidated) {
+            // The Cues element was declared but lies outside the file bounds (truncated
+            // download). Expose a proportional seek map: the byte position is estimated by
+            // (timeUs / durationUs) * contentLength and the extractor performs a byte-level
+            // Cluster ID resync after each seek. Seeks may be inaccurate but playback works
+            // for both local and network sources. This path is only taken for files whose
+            // declared Cues position is invalid; normal files are unaffected.
+            long contentEnd =
+                inputLength != C.LENGTH_UNSET
+                    ? inputLength
+                    : segmentContentPosition + segmentContentSize;
+            extractorOutput.seekMap(
+                new ProportionalSeekMap(durationUs, segmentContentPosition, contentEnd));
+            sentSeekMap = true;
           } else {
             // We don't know where the Cues element is located. It's most likely omitted. Allow
             // playback, but disable seeking.
@@ -3238,6 +3307,59 @@ public class MatroskaExtractor implements Extractor {
             "Missing CodecPrivate for codec " + codecId, /* cause= */ null);
       }
       return codecPrivate;
+    }
+  }
+
+  /**
+   * A proportional {@link SeekMap} used as a fallback when the file's declared Cues position is
+   * invalid (e.g. truncated download). It maps a target time to a byte position by linear
+   * interpolation across the segment content range. The extractor performs a byte-level Cluster
+   * ID resync after each seek, so the estimated position does not need to fall on a Cluster
+   * boundary.
+   */
+  private static final class ProportionalSeekMap implements SeekMap {
+
+    private final long durationUs;
+    private final long contentStartPosition;
+    private final long contentEndPosition;
+
+    public ProportionalSeekMap(
+        long durationUs, long contentStartPosition, long contentEndPosition) {
+      this.durationUs = durationUs;
+      this.contentStartPosition = contentStartPosition;
+      this.contentEndPosition = contentEndPosition;
+    }
+
+    @Override
+    public boolean isSeekable() {
+      return true;
+    }
+
+    @Override
+    public long getDurationUs() {
+      return durationUs;
+    }
+
+    @Override
+    public SeekPoints getSeekPoints(long timeUs) {
+      long contentLength = Math.max(0L, contentEndPosition - contentStartPosition);
+      long offset;
+      if (durationUs <= 0 || contentLength == 0) {
+        offset = 0L;
+      } else {
+        double ratio = (double) timeUs / (double) durationUs;
+        if (ratio < 0.0) {
+          ratio = 0.0;
+        } else if (ratio > 1.0) {
+          ratio = 1.0;
+        }
+        offset = (long) (contentLength * ratio);
+      }
+      long position = contentStartPosition + offset;
+      if (position >= contentEndPosition && contentEndPosition > contentStartPosition) {
+        position = contentEndPosition - 1;
+      }
+      return new SeekPoints(new SeekPoint(timeUs, position));
     }
   }
 
