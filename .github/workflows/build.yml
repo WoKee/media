@@ -1,0 +1,103 @@
+# This is a basic workflow to help you get started with Actions
+name: CI
+
+# Controls when the workflow will run
+on:
+  # workflow_dispatch: # allows manual triggering
+  # push:
+  #   branches: [ "release" ]
+  # pull_request:
+  #   branches: [ "release" ]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'branch or tag'
+        default: 'release-1.11.0-wokee'
+        required: true
+        type: string
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  build:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: ilammy/setup-nasm@v1
+
+      - name: Install Meson
+        run: pip3 install --user meson
+
+      # Set up NDK
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          local-cache: false
+          add-to-path: true
+
+      # Build
+      - name: Build
+        continue-on-error: false
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          echo "build ffmpeg"
+          bash ${{ github.workspace }}/.github/scripts/build.sh
+          echo "Build Success"
+
+      # Upload FFmpeg static libs
+      - name: Upload FFmpeg Static Libs
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: "ffmpeg-libs"
+          path: ${{ github.workspace }}/libraries/decoder_ffmpeg/src/main/jni/ffmpeg/android-libs
+
+      # Build all AARs
+      - name: Build AARs
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee gradle-build.log
+
+      # Collect and upload AARs
+      - name: Collect AARs
+        if: always()
+        run: |
+          mkdir -p aar-output
+          find libraries -name "*.aar" -type f -exec cp {} aar-output/ \;
+          echo "=== Collected AARs ==="
+          ls -lh aar-output/
+          echo "=== Total: $(ls aar-output/*.aar 2>/dev/null | wc -l) AARs ==="
+
+      - name: Upload AARs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media3-aar
+          path: aar-output/
+          retention-days: 30
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: gradle-build.log
+          retention-days: 7
