@@ -66,7 +66,15 @@ jobs:
           ./gradlew :lib-decoder-ffmpeg:assembleRelease \
             --no-daemon \
             --stacktrace \
-            -Pandroid.useAndroidX=true
+            -Pandroid.useAndroidX=true 2>&1 | tee gradle-build.log
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: gradle-build.log
+          retention-days: 7
 
       - name: Verify AAR contents
         run: |
