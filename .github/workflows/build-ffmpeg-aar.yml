@@ -23,26 +23,34 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Install NASM
+        uses: ilammy/setup-nasm@v1
+
       - name: Install NDK
-        run: |
-          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;25.2.9519653"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r27c
+          local-cache: false
+          add-to-path: true
 
       - name: Clone FFmpeg source
         run: |
           cd libraries/decoder_ffmpeg/src/main/jni
           rm -rf ffmpeg
-          git clone https://github.com/WoKee/FFmpeg --branch=release-9.0-fongmi --depth=1
+          git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg
 
       - name: Build FFmpeg static libraries
+        env:
+          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           export FFMPEG_MODULE_PATH="$(pwd)/libraries/decoder_ffmpeg/src/main"
-          export NDK_PATH="$ANDROID_NDK_HOME"
           export HOST_PLATFORM="linux-x86_64"
           export ANDROID_ABI=21
           cd "${FFMPEG_MODULE_PATH}/jni"
           chmod +x build_ffmpeg.sh
-          ./build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK_PATH}" "${HOST_PLATFORM}" "${ANDROID_ABI}" vorbis opus flac
+          bash build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK_PATH}" "${HOST_PLATFORM}" "${ANDROID_ABI}" vorbis opus flac
 
       - name: Copy .a files to jniLibs
         run: |
