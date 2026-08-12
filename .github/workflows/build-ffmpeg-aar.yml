@@ -43,7 +43,8 @@ jobs:
       - name: Build FFmpeg static libraries
         run: |
           set -x
-          NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
+          echo "ANDROID_NDK_HOME=${ANDROID_NDK_HOME}"
+          NDK_PATH="${ANDROID_NDK_HOME}"
           export FFMPEG_MODULE_PATH="$(pwd)/libraries/decoder_ffmpeg/src/main"
           export HOST_PLATFORM="linux-x86_64"
           export ANDROID_ABI=21
