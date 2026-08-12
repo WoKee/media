@@ -1,4 +1,4 @@
-name: Build FFmpeg Decoder AAR
+name: Build All AARs
 
 on:
   workflow_dispatch:
@@ -41,7 +41,6 @@ jobs:
         run: |
           export NDK_PATH="${ANDROID_SDK_ROOT}/ndk/27.0.12077973"
           echo "NDK_PATH: ${NDK_PATH}"
-          ls -la "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/" | head -5
           chmod +x libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
           chmod +x libraries/decoder_ffmpeg/src/main/jni/ffmpeg/configure
           FFMPEG_MODULE_PATH="$(pwd)/libraries/decoder_ffmpeg/src/main"
@@ -54,19 +53,35 @@ jobs:
 
       - name: Verify FFmpeg static libs
         run: |
-          echo "=== Checking static libs ==="
           for arch in armeabi-v7a arm64-v8a x86 x86_64; do
             echo "--- ${arch} ---"
             ls -lh libraries/decoder_ffmpeg/src/main/jni/ffmpeg/android-libs/${arch}/
           done
 
-      - name: Build FFmpeg Decoder AAR
+      - name: Build all library AARs
         run: |
           chmod +x gradlew
-          ./gradlew :lib-decoder-ffmpeg:assembleRelease \
+          ./gradlew assembleRelease \
             --no-daemon \
             --stacktrace \
             -Pandroid.useAndroidX=true 2>&1 | tee gradle-build.log
+
+      - name: Collect all AARs
+        if: always()
+        run: |
+          mkdir -p aar-output
+          find libraries -name "*.aar" -type f -exec cp {} aar-output/ \;
+          echo "=== Collected AARs ==="
+          ls -lh aar-output/
+          echo "=== Total: $(ls aar-output/*.aar 2>/dev/null | wc -l) AARs ==="
+
+      - name: Upload all AARs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: media3-all-aars
+          path: aar-output/*.aar
+          retention-days: 30
 
       - name: Upload build logs on failure
         if: failure()
@@ -75,18 +90,3 @@ jobs:
           name: build-logs
           path: gradle-build.log
           retention-days: 7
-
-      - name: Verify AAR contents
-        run: |
-          AAR_PATH=$(find libraries/decoder_ffmpeg/build -name "*.aar" -type f | head -1)
-          echo "AAR: ${AAR_PATH}"
-          ls -lh "${AAR_PATH}"
-          echo "=== .so files in AAR ==="
-          unzip -l "${AAR_PATH}" | grep "\.so"
-
-      - name: Upload AAR
-        uses: actions/upload-artifact@v4
-        with:
-          name: media3-decoder-ffmpeg
-          path: libraries/decoder_ffmpeg/build/outputs/aar/*.aar
-          retention-days: 30
