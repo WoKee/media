@@ -82,6 +82,21 @@ tasks.register<Exec>("assembleLibs") {
   group = "build"
   description = "Assembles release AARs for all lib- modules"
   dependsOn(subprojects.filter { it.name.startsWith("lib-") }.map { "${it.path}:assembleRelease" })
-  commandLine("cmd", "/c", "move.bat")
-  workingDir(rootDir)
+  // Only run move.bat on Windows (copies AARs to local TV-MS project)
+  if (System.getProperty("os.name").lowercase().contains("win")) {
+    commandLine("cmd", "/c", "move.bat")
+    workingDir(rootDir)
+  } else {
+    // On Linux/macOS (CI), just print AAR locations
+    doLast {
+      subprojects.filter { it.name.startsWith("lib-") }.forEach { proj ->
+        val aarDir = file("${proj.projectDir}/buildout/outputs/aar")
+        if (aarDir.exists()) {
+          aarDir.listFiles()?.filter { it.name.endsWith("-release.aar") }?.forEach {
+            println("AAR: ${it.absolutePath}")
+          }
+        }
+      }
+    }
+  }
 }

@@ -29,7 +29,6 @@ android {
 
 dependencies {
   api(project(":lib-common"))
-  api(project(":lib-ui-danmaku"))
   implementation(libs.androidx.annotation)
   implementation(libs.androidx.recyclerview)
   testImplementation(project(":lib-exoplayer"))

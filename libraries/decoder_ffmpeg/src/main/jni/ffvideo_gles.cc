@@ -34,7 +34,6 @@
 
 #include "ffcommon.h"
 #include "ffvideo_frame.h"
-#include "ffvideo_placebo.h"
 #include "ffvideo_surface.h"
 
 extern "C" {
@@ -269,8 +268,7 @@ SurfaceColorMode GetSurfaceColorMode(const AVFrame *frame) {
 }
 
 bool CanUseFastSdrShader(const AVFrame *frame) {
-  // The fast shader performs YUV matrix/range conversion only. Route frames
-  // requiring gamut, transfer or constant-luminance conversion to libplacebo.
+  // The fast shader performs YUV matrix/range conversion only.
   switch (frame->colorspace) {
     case AVCOL_SPC_UNSPECIFIED:
     case AVCOL_SPC_BT709:
@@ -645,17 +643,6 @@ class VideoSurfaceRenderer::Impl {
     }
 
     bool apply_dolby_vision_mapping = false;
-    if (dolby_vision_mapping_policy != DolbyVisionMappingPolicy::kDisabled) {
-      if (CanMapDolbyVisionMetadata(frame)) {
-        apply_dolby_vision_mapping = true;
-      } else if (dolby_vision_mapping_policy ==
-                 DolbyVisionMappingPolicy::kRequire) {
-        LOGE(
-            "Required Dolby Vision mapping metadata is unavailable or "
-            "invalid.");
-        return VideoRenderResult::kError;
-      }
-    }
 
     std::unique_lock<std::mutex> lock(mutex_);
     if (stop_ || fatal_error_.load(std::memory_order_acquire)) {
@@ -1929,8 +1916,7 @@ class VideoSurfaceRenderer::Impl {
 
   bool UploadPlane(int texture_set, int plane, const AVFrame *frame,
                    const YuvFormat &format,
-                   const std::shared_ptr<DirectFrameSlot> &direct_frame_slot,
-                   bool use_placebo) {
+                   const std::shared_ptr<DirectFrameSlot> &direct_frame_slot) {
     const int width =
         plane == 0 ? frame->width
                    : AV_CEIL_RSHIFT(frame->width, format.chroma_width_shift);
@@ -1941,27 +1927,21 @@ class VideoSurfaceRenderer::Impl {
     glActiveTexture(GL_TEXTURE0 + plane);
     glBindTexture(GL_TEXTURE_2D, texture.id);
 
-    // R16UI is core in GLES 3 and lets libplacebo validate the capability it
-    // actually needs (sampling) when wrapping the texture.
     const bool normalized_16 = format.bytes_per_sample == 2 &&
-                               supports_texture_norm16_ && !use_placebo;
+                               supports_texture_norm16_;
     const bool packed_16 = format.bytes_per_sample == 2 &&
-                           !supports_texture_norm16_ && !use_placebo;
-    const bool integer_16 = format.bytes_per_sample == 2 && use_placebo;
+                           !supports_texture_norm16_;
     const GLenum internal_format = format.bytes_per_sample == 1 ? GL_R8
                                    : normalized_16              ? kGlR16Ext
-                                   : integer_16                 ? GL_R16UI
                                                                 : GL_RG8;
-    const GLenum data_format = packed_16    ? GL_RG
-                               : integer_16 ? GL_RED_INTEGER
-                                            : GL_RED;
+    const GLenum data_format = packed_16 ? GL_RG : GL_RED;
     const GLenum data_type =
-        normalized_16 || integer_16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE;
+        normalized_16 ? GL_UNSIGNED_SHORT : GL_UNSIGNED_BYTE;
     const bool allocate_texture = texture.width != width ||
                                   texture.height != height ||
                                   texture.internal_format != internal_format;
     if (allocate_texture) {
-      const GLenum filter = integer_16 ? GL_NEAREST : GL_LINEAR;
+      const GLenum filter = GL_LINEAR;
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
                       static_cast<GLint>(filter));
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER,
@@ -2046,25 +2026,9 @@ class VideoSurfaceRenderer::Impl {
     if (!GetYuvFormat(frame, &format) || !InitializeEglDisplay()) {
       return false;
     }
-    if (apply_dolby_vision_mapping && !dolby_vision_mapping_logged_) {
-      __android_log_print(
-          ANDROID_LOG_INFO, LOG_TAG,
-          "Using FFmpeg RPU metadata with libplacebo OpenGL Dolby Vision "
-          "mapping.");
-      dolby_vision_mapping_logged_ = true;
-    }
     const SurfaceColorMode source_color_mode = apply_dolby_vision_mapping
                                                    ? SurfaceColorMode::kBt2020Pq
                                                    : GetSurfaceColorMode(frame);
-    bool use_placebo = source_color_mode != SurfaceColorMode::kSdr ||
-                       !CanUseFastSdrShader(frame);
-    if (source_color_mode == SurfaceColorMode::kSdr && use_placebo &&
-        !sdr_color_management_logged_) {
-      __android_log_print(
-          ANDROID_LOG_INFO, LOG_TAG,
-          "Using libplacebo OpenGL for SDR color-space conversion.");
-      sdr_color_management_logged_ = true;
-    }
     SurfaceColorMode output_color_mode = SurfaceColorMode::kSdr;
     HdrToSdrTransfer hdr_to_sdr_transfer = HdrToSdrTransfer::kNone;
     EGLint actual_hdr_colorspace = GetRejectedEglColorspace(source_color_mode);
@@ -2103,12 +2067,8 @@ class VideoSurfaceRenderer::Impl {
     const bool use_native_hdr_shader =
         CanUseNativeHdrShader(frame, source_color_mode, output_color_mode,
                               apply_dolby_vision_mapping);
-    if (use_native_hdr_shader) {
-      use_placebo = false;
-    }
     ColorTransform color_transform = {};
-    if (!use_placebo &&
-        !GetColorTransform(frame, format.depth, &color_transform)) {
+    if (!GetColorTransform(frame, format.depth, &color_transform)) {
       const char *colorspace = av_color_space_name(frame->colorspace);
       LOGE("Unsupported YUV colorspace for GLES rendering: %s.",
            colorspace ? colorspace : "unknown");
@@ -2119,7 +2079,7 @@ class VideoSurfaceRenderer::Impl {
         IsDirectFrame(frame) ? direct_frame_pool_->Find(frame->data[0])
                              : nullptr;
     const GLuint direct_buffer_texture =
-        !use_placebo && direct_frame_slot
+        direct_frame_slot
             ? GetDirectBufferTexture(direct_frame_slot, format)
             : 0;
     const bool use_direct_buffer = direct_buffer_texture != 0;
@@ -2135,7 +2095,7 @@ class VideoSurfaceRenderer::Impl {
         glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
         for (int plane = 0; plane < kPlaneCount; ++plane) {
           if (!UploadPlane(texture_set_index_, plane, frame, format,
-                           direct_frame_slot, use_placebo)) {
+                           direct_frame_slot)) {
             return false;
           }
         }
@@ -2161,38 +2121,7 @@ class VideoSurfaceRenderer::Impl {
                           height, SurfaceColorModeName(output_color_mode));
     }
 
-    if (use_placebo) {
-      PlaceboTexturePlane planes[kPlaneCount];
-      for (int plane = 0; plane < kPlaneCount; ++plane) {
-        const TexturePlane &texture = textures_[texture_set_index_][plane];
-        planes[plane] = {
-            texture.id,
-            texture.width,
-            texture.height,
-            static_cast<int>(texture.internal_format),
-        };
-      }
-      PlaceboOutputColorMode placebo_output_mode;
-      switch (output_color_mode) {
-        case SurfaceColorMode::kBt2020Pq:
-          placebo_output_mode = PlaceboOutputColorMode::kBt2020Pq;
-          break;
-        case SurfaceColorMode::kBt2020Hlg:
-          placebo_output_mode = PlaceboOutputColorMode::kBt2020Hlg;
-          break;
-        case SurfaceColorMode::kSdr:
-          placebo_output_mode = PlaceboOutputColorMode::kSdr;
-          break;
-      }
-      ScopedTrace trace("ffmpegPlaceboRender");
-      if (!placebo_renderer_.Initialize(egl_display_, egl_context_) ||
-          !placebo_renderer_.Render(frame, planes, texture_set_index_, width,
-                                    height, rotation_degrees,
-                                    placebo_output_mode,
-                                    apply_dolby_vision_mapping)) {
-        return false;
-      }
-    } else if (use_direct_buffer) {
+    if (use_direct_buffer) {
       ScopedTrace trace("ffmpegGlesZeroUpload");
       if (!RenderDirectBuffer(frame, format, color_transform, direct_frame_slot,
                               direct_buffer_texture, width, height,
@@ -2407,7 +2336,6 @@ class VideoSurfaceRenderer::Impl {
       if (flush_generation) {
         if (egl_surface_ != EGL_NO_SURFACE &&
             MakePresentationContextCurrent()) {
-          placebo_renderer_.Flush();
           glFinish();
         } else if (egl_display_ != EGL_NO_DISPLAY &&
                    eglGetCurrentContext() != EGL_NO_CONTEXT) {
@@ -2493,12 +2421,10 @@ class VideoSurfaceRenderer::Impl {
             "Failed to bind the GLES presentation context for teardown "
             "(0x%x).",
             eglGetError());
-        placebo_renderer_.Abandon();
       }
       if (eglGetCurrentContext() == egl_context_) {
         glFinish();
         ReleasePendingDirectFrames();
-        placebo_renderer_.Shutdown();
       }
     }
     if (resource_egl_context_ != EGL_NO_CONTEXT &&
@@ -2640,8 +2566,6 @@ class VideoSurfaceRenderer::Impl {
   bool bt2020_hlg_surface_rejected_ = false;
   bool supports_texture_norm16_ = false;
   bool hdr_route_logged_[2][2] = {};
-  bool dolby_vision_mapping_logged_ = false;
-  bool sdr_color_management_logged_ = false;
   bool zero_upload_logged_ = false;
   bool native_hdr_zero_upload_logged_ = false;
   bool hdr_surface_metadata_logged_ = false;
@@ -2667,7 +2591,6 @@ class VideoSurfaceRenderer::Impl {
   TexturePlane textures_[kTextureSetCount][kPlaneCount];
   int texture_set_index_ = -1;
   std::unordered_map<GLuint, GLuint> direct_buffer_textures_;
-  PlaceboVideoRenderer placebo_renderer_;
 
   ANativeWindow *native_window_ = nullptr;
   ANativeWindow *submitted_window_ = nullptr;
