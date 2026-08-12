@@ -1,0 +1,84 @@
+name: Build FFmpeg Decoder AAR
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'ndk;27.0.12077973'
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', 'gradle/libs.versions.toml') }}
+          restore-keys: ${{ runner.os }}-gradle-
+
+      - name: Clone FFmpeg source
+        run: |
+          cd libraries/decoder_ffmpeg/src/main/jni
+          git clone https://github.com/WoKee/FFmpeg --branch=release/9.0-fongmi --depth=1 ffmpeg
+
+      - name: Build FFmpeg (all architectures)
+        run: |
+          export NDK_PATH="${ANDROID_SDK_ROOT}/ndk/27.0.12077973"
+          echo "NDK_PATH: ${NDK_PATH}"
+          ls -la "${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/" | head -5
+          chmod +x libraries/decoder_ffmpeg/src/main/jni/build_ffmpeg.sh
+          chmod +x libraries/decoder_ffmpeg/src/main/jni/ffmpeg/configure
+          FFMPEG_MODULE_PATH="$(pwd)/libraries/decoder_ffmpeg/src/main"
+          bash "${FFMPEG_MODULE_PATH}/jni/build_ffmpeg.sh" \
+            "${FFMPEG_MODULE_PATH}" \
+            "${NDK_PATH}" \
+            "linux-x86_64" \
+            21 \
+            vorbis opus flac av3a ac3 eac3 truehd dca aac mp3 alac amrnb amrwb pcm_mulaw pcm_alaw
+
+      - name: Verify FFmpeg static libs
+        run: |
+          echo "=== Checking static libs ==="
+          for arch in armeabi-v7a arm64-v8a x86 x86_64; do
+            echo "--- ${arch} ---"
+            ls -lh libraries/decoder_ffmpeg/src/main/jni/ffmpeg/android-libs/${arch}/
+          done
+
+      - name: Build FFmpeg Decoder AAR
+        run: |
+          chmod +x gradlew
+          ./gradlew :lib-decoder-ffmpeg:assembleRelease \
+            --no-daemon \
+            --stacktrace \
+            -Pandroid.useAndroidX=true
+
+      - name: Verify AAR contents
+        run: |
+          AAR_PATH=$(find libraries/decoder_ffmpeg/build -name "*.aar" -type f | head -1)
+          echo "AAR: ${AAR_PATH}"
+          ls -lh "${AAR_PATH}"
+          echo "=== .so files in AAR ==="
+          unzip -l "${AAR_PATH}" | grep "\.so"
+
+      - name: Upload AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: media3-decoder-ffmpeg
+          path: libraries/decoder_ffmpeg/build/outputs/aar/*.aar
+          retention-days: 30

@@ -4,6 +4,7 @@ gen
 libs
 obj
 .kotlin
+.vscode
 
 # IntelliJ IDEA
 .idea
@@ -57,7 +58,6 @@ tmp
 # VP9 decoder extension
 libraries/decoder_vp9/src/main/jni/libvpx
 libraries/decoder_vp9/src/main/jni/libvpx_android_configs
-libraries/decoder_vp9/src/main/jni/libyuv
 
 # AV1 decoder extension
 libraries/decoder_av1/src/main/jni/cpu_features
@@ -68,7 +68,6 @@ libraries/decoder_av1/src/main/jni/nativelib
 libraries/decoder_opus/src/main/jni/libopus
 
 # FLAC decoder extension
-libraries/decoder_flac/src/main/jni/flac
 libraries/decoder_flac/src/main/jni/libflac
 
 # FFmpeg decoder extension
