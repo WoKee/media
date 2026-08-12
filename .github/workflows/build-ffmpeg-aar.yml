@@ -41,11 +41,9 @@ jobs:
           git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg
 
       - name: Build FFmpeg static libraries
-        env:
-          NDK_PATH: ${{ steps.setup-ndk.outputs.ndk-path }}
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -x
+          NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
           export FFMPEG_MODULE_PATH="$(pwd)/libraries/decoder_ffmpeg/src/main"
           export HOST_PLATFORM="linux-x86_64"
           export ANDROID_ABI=21
