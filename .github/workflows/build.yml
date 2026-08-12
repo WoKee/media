@@ -3,9 +3,8 @@ name: CI
 
 # Controls when the workflow will run
 on:
-  # workflow_dispatch: # allows manual triggering
-  # push:
-  #   branches: [ "release" ]
+  push:
+    branches: [ "release" ]
   # pull_request:
   #   branches: [ "release" ]
 
