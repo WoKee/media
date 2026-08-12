@@ -31,7 +31,8 @@ jobs:
       - name: Clone FFmpeg source
         run: |
           cd libraries/decoder_ffmpeg/src/main/jni
-          git clone https://github.com/WoKee/FFmpeg --branch=release/9.0-fongmi --depth=1
+          rm -rf ffmpeg
+          git clone https://github.com/WoKee/FFmpeg --branch=release-9.0-fongmi --depth=1
 
       - name: Build FFmpeg static libraries
         run: |
