@@ -32,19 +32,21 @@ jobs:
 
       - name: Build FFmpeg and AARs
         run: |
-          set -exo pipefail
-          FFMPEG_MODULE_PATH="${GITHUB_WORKSPACE}/libraries/decoder_ffmpeg/src/main"
           BUILD_LOG="${GITHUB_WORKSPACE}/build-output.log"
-          
+          exec > >(tee -a "$BUILD_LOG") 2>&1
+          set -x
+
+          FFMPEG_MODULE_PATH="${GITHUB_WORKSPACE}/libraries/decoder_ffmpeg/src/main"
+
           # Debug: show all env vars related to NDK/Android
           echo "=== NDK Debug Info ==="
-          echo "steps.setup-ndk.outputs.ndk-path = ${NDK_PATH:-unset}"
           echo "ANDROID_NDK_HOME = ${ANDROID_NDK_HOME:-unset}"
           echo "ANDROID_NDK_ROOT = ${ANDROID_NDK_ROOT:-unset}"
           echo "ANDROID_NDK = ${ANDROID_NDK:-unset}"
           echo "ANDROID_SDK_ROOT = ${ANDROID_SDK_ROOT:-unset}"
           env | grep -i ndk || echo "No NDK env vars found"
-          
+          env | grep -i android || echo "No Android env vars found"
+
           # Find NDK - try multiple sources
           NDK=""
           if [ -d "${ANDROID_NDK_HOME:-}" ]; then
@@ -54,8 +56,8 @@ jobs:
           elif [ -d "${ANDROID_NDK:-}" ]; then
             NDK="${ANDROID_NDK}"
           else
-            # Search common locations
-            for d in /opt/android/ndk /usr/local/lib/android/sdk/ndk /opt/hostedtoolcache/ndk; do
+            # Search common locations on GitHub runners
+            for d in /opt/hostedtoolcache/ndk /usr/local/lib/android/sdk/ndk /opt/android/ndk; do
               if [ -d "$d" ]; then
                 echo "Found NDK dir at: $d"
                 ls -la "$d"
@@ -64,7 +66,7 @@ jobs:
               fi
             done
           fi
-          
+
           if [ -z "$NDK" ]; then
             echo "ERROR: Could not find NDK path!"
             exit 1
@@ -72,34 +74,35 @@ jobs:
           echo "Using NDK: ${NDK}"
           echo "NDK contents:"
           ls -la "${NDK}/"
-          
+
           # Verify toolchain
           TC="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "Toolchain dir: $TC"
           echo "Toolchain dir exists: $([ -d "$TC" ] && echo YES || echo NO)"
           if [ -d "$TC" ]; then
             ls "$TC"/armv7a-linux-androideabi* 2>/dev/null || echo "No armv7a clang found"
           fi
-          
+
           # Clone FFmpeg
           cd "${FFMPEG_MODULE_PATH}/jni"
           rm -rf ffmpeg
-          git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg 2>&1 | tee -a "${BUILD_LOG}"
-          
+          git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg
+
           # Build FFmpeg
           chmod +x build_ffmpeg.sh
-          bash build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK}" "linux-x86_64" 21 vorbis opus flac 2>&1 | tee -a "${BUILD_LOG}"
-          
+          bash build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK}" "linux-x86_64" 21 vorbis opus flac
+
           # Copy .a files
           JNILIBS="${FFMPEG_MODULE_PATH}/jniLibs"
           mkdir -p "${JNILIBS}/arm64-v8a" "${JNILIBS}/armeabi-v7a"
           cp "${FFMPEG_MODULE_PATH}/jni/ffmpeg/android-libs/arm64-v8a"/lib*.a "${JNILIBS}/arm64-v8a/"
           cp "${FFMPEG_MODULE_PATH}/jni/ffmpeg/android-libs/armeabi-v7a"/lib*.a "${JNILIBS}/armeabi-v7a/"
           rm -f "${JNILIBS}/arm64-v8a"/*.so "${JNILIBS}/armeabi-v7a"/*.so
-          
+
           # Build AARs
           cd "${GITHUB_WORKSPACE}"
           chmod +x gradlew
-          ./gradlew assembleLibs --no-daemon --stacktrace 2>&1 | tee -a "${BUILD_LOG}"
+          ./gradlew assembleLibs --no-daemon --stacktrace
 
       - name: Upload build log
         if: always()
