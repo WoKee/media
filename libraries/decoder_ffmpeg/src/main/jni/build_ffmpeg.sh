@@ -38,13 +38,13 @@ COMMON_OPTIONS="
     --disable-avdevice
     --disable-avformat
     --disable-swscale
-    --disable-postproc
     --disable-avfilter
     --disable-symver
     --enable-swresample
     --extra-ldexeflags=-pie
     --disable-v4l2-m2m
     --disable-vulkan
+    --enable-libarcdav3a
     "
 TOOLCHAIN_PREFIX="${NDK_PATH}/toolchains/llvm/prebuilt/${HOST_PLATFORM}/bin"
 if [[ ! -d "${TOOLCHAIN_PREFIX}" ]]
@@ -73,7 +73,20 @@ then
     ANDROID_ABI_64BIT=21
 fi
 
+# --- Build AV3A (avs3a) external library for armeabi-v7a ---
+AV3A_SRC="${FFMPEG_MODULE_PATH}/jni/ffmpeg/dependency/avs3a"
+AV3A_INSTALL_ARMV7="${FFMPEG_MODULE_PATH}/jni/ffmpeg/dependency/avs3a/install/armeabi-v7a"
+mkdir -p "${AV3A_INSTALL_ARMV7}"
+cmake -B "${AV3A_SRC}/build-armeabi-v7a" -S "${AV3A_SRC}" \
+    -DCMAKE_TOOLCHAIN_FILE="${NDK_PATH}/build/cmake/android.toolchain.cmake" \
+    -DANDROID_ABI=armeabi-v7a -DANDROID_PLATFORM=android-${ANDROID_ABI} \
+    -DCMAKE_INSTALL_PREFIX="${AV3A_INSTALL_ARMV7}"
+cmake --build "${AV3A_SRC}/build-armeabi-v7a" --parallel $JOBS
+cmake --install "${AV3A_SRC}/build-armeabi-v7a"
+
 cd "${FFMPEG_MODULE_PATH}/jni/ffmpeg"
+PKG_CONFIG_BIN="$(which pkg-config)"
+PKG_CONFIG_LIBDIR="${AV3A_INSTALL_ARMV7}/lib/pkgconfig" \
 ./configure \
     --libdir=android-libs/armeabi-v7a \
     --arch=arm \
@@ -83,12 +96,24 @@ cd "${FFMPEG_MODULE_PATH}/jni/ffmpeg"
     --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
     --ranlib="${TOOLCHAIN_PREFIX}/llvm-ranlib" \
     --strip="${TOOLCHAIN_PREFIX}/llvm-strip" \
-    --extra-cflags="-march=armv7-a -mfloat-abi=softfp" \
-    --extra-ldflags="-Wl,--fix-cortex-a8" \
+    --pkg-config="${PKG_CONFIG_BIN}" \
+    --extra-cflags="-march=armv7-a -mfloat-abi=softfp -I${AV3A_INSTALL_ARMV7}/include" \
+    --extra-ldflags="-Wl,--fix-cortex-a8 -L${AV3A_INSTALL_ARMV7}/lib" \
     ${COMMON_OPTIONS}
 make -j$JOBS
 make install-libs
 make clean
+# --- Build AV3A (avs3a) external library for arm64-v8a ---
+AV3A_INSTALL_ARM64="${FFMPEG_MODULE_PATH}/jni/ffmpeg/dependency/avs3a/install/arm64-v8a"
+mkdir -p "${AV3A_INSTALL_ARM64}"
+cmake -B "${AV3A_SRC}/build-arm64-v8a" -S "${AV3A_SRC}" \
+    -DCMAKE_TOOLCHAIN_FILE="${NDK_PATH}/build/cmake/android.toolchain.cmake" \
+    -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-${ANDROID_ABI_64BIT} \
+    -DCMAKE_INSTALL_PREFIX="${AV3A_INSTALL_ARM64}"
+cmake --build "${AV3A_SRC}/build-arm64-v8a" --parallel $JOBS
+cmake --install "${AV3A_SRC}/build-arm64-v8a"
+
+PKG_CONFIG_LIBDIR="${AV3A_INSTALL_ARM64}/lib/pkgconfig" \
 ./configure \
     --libdir=android-libs/arm64-v8a \
     --arch=aarch64 \
@@ -98,35 +123,11 @@ make clean
     --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
     --ranlib="${TOOLCHAIN_PREFIX}/llvm-ranlib" \
     --strip="${TOOLCHAIN_PREFIX}/llvm-strip" \
+    --pkg-config="${PKG_CONFIG_BIN}" \
+    --extra-cflags="-I${AV3A_INSTALL_ARM64}/include" \
+    --extra-ldflags="-L${AV3A_INSTALL_ARM64}/lib" \
     ${COMMON_OPTIONS}
 make -j$JOBS
 make install-libs
 make clean
-./configure \
-    --libdir=android-libs/x86 \
-    --arch=x86 \
-    --cpu=i686 \
-    --cross-prefix="${TOOLCHAIN_PREFIX}/i686-linux-android${ANDROID_ABI}-" \
-    --nm="${TOOLCHAIN_PREFIX}/llvm-nm" \
-    --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
-    --ranlib="${TOOLCHAIN_PREFIX}/llvm-ranlib" \
-    --strip="${TOOLCHAIN_PREFIX}/llvm-strip" \
-    --disable-asm \
-    ${COMMON_OPTIONS}
-make -j$JOBS
-make install-libs
-make clean
-./configure \
-    --libdir=android-libs/x86_64 \
-    --arch=x86_64 \
-    --cpu=x86-64 \
-    --cross-prefix="${TOOLCHAIN_PREFIX}/x86_64-linux-android${ANDROID_ABI_64BIT}-" \
-    --nm="${TOOLCHAIN_PREFIX}/llvm-nm" \
-    --ar="${TOOLCHAIN_PREFIX}/llvm-ar" \
-    --ranlib="${TOOLCHAIN_PREFIX}/llvm-ranlib" \
-    --strip="${TOOLCHAIN_PREFIX}/llvm-strip" \
-    --disable-asm \
-    ${COMMON_OPTIONS}
-make -j$JOBS
-make install-libs
-make clean
+# x86 and x86_64 skipped — only armeabi-v7a and arm64-v8a are needed.
