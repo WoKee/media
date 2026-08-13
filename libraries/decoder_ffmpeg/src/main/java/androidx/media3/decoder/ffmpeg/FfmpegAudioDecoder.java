@@ -55,7 +55,8 @@ public final class FfmpegAudioDecoder
       int numInputBuffers,
       int numOutputBuffers,
       int initialInputBufferSize,
-      boolean outputFloat)
+      boolean outputFloat,
+      int targetChannelCount)
       throws FfmpegDecoderException {
     super(new DecoderInputBuffer[numInputBuffers], new SimpleDecoderOutputBuffer[numOutputBuffers]);
     boolean initialized = false;
@@ -79,7 +80,8 @@ public final class FfmpegAudioDecoder
               format.channelCount,
               initializationData.blockAlign,
               initializationData.bitsPerCodedSample,
-              format.averageBitrate);
+              format.averageBitrate,
+              targetChannelCount);
       if (nativeContext == 0) {
         throw new FfmpegDecoderException("Initialization failed.");
       }
@@ -256,7 +258,8 @@ public final class FfmpegAudioDecoder
       int rawChannelCount,
       int rawBlockAlign,
       int rawBitsPerCodedSample,
-      int rawBitRate);
+      int rawBitRate,
+      int targetChannelCount);
 
   private native int ffmpegDecode(
       long context,

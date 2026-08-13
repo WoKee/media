@@ -102,6 +102,7 @@ struct AudioJniContext {
   AudioCodecConfig config;
   ResampleState resampler;
   int targetSampleRate = 0;
+  int targetChannelCount = 0;
   int outputChannelCount = 0;
   int outputSampleRate = 0;
   int64_t lastOutputTimeUs = AV_NOPTS_VALUE;
@@ -439,10 +440,16 @@ static int decodePacket(AudioJniContext *jniContext, AVPacket *packet,
     jniContext->outputChannelCount = channelCount;
     jniContext->outputSampleRate = outSampleRate;
 
+    // Determine effective output channel count (apply downmix target if set)
+    const int effectiveChannelCount =
+        jniContext->targetChannelCount > 0 ? jniContext->targetChannelCount
+                                           : channelCount;
+
     if (!av_sample_fmt_is_planar(sampleFormat) &&
         sampleFormat == context->request_sample_fmt &&
         (jniContext->targetSampleRate == 0 ||
-         jniContext->targetSampleRate == sampleRate)) {
+         jniContext->targetSampleRate == sampleRate) &&
+        effectiveChannelCount == channelCount) {
       int dataSize = av_samples_get_buffer_size(nullptr, channelCount,
                                                 sampleCount, sampleFormat, 1);
       if (dataSize < 0) {
@@ -455,27 +462,36 @@ static int decodePacket(AudioJniContext *jniContext, AVPacket *packet,
       continue;
     }
     AVSampleFormat outputFormat = context->request_sample_fmt;
-    if (!jniContext->resampler.matches(channelLayout, channelLayout,
+    // Build the output channel layout based on effective channel count
+    AVChannelLayout outLayout = {};
+    const AVChannelLayout *outLayoutPtr = channelLayout;
+    if (effectiveChannelCount != channelCount) {
+      av_channel_layout_default(&outLayout, effectiveChannelCount);
+      outLayoutPtr = &outLayout;
+    }
+    if (!jniContext->resampler.matches(channelLayout, outLayoutPtr,
                                        sampleFormat, outputFormat, sampleRate,
                                        outSampleRate)) {
-      result = jniContext->resampler.configure(channelLayout, channelLayout,
+      result = jniContext->resampler.configure(channelLayout, outLayoutPtr,
                                                sampleFormat, outputFormat,
                                                sampleRate, outSampleRate);
       if (result < 0) {
         logError("swr_alloc_set_opts2", result);
+        if (outLayoutPtr == &outLayout) av_channel_layout_uninit(&outLayout);
         return transformError(result);
       }
     }
+    if (outLayoutPtr == &outLayout) av_channel_layout_uninit(&outLayout);
     SwrContext *resampleContext = jniContext->resampler.context;
     int outSampleSize = av_get_bytes_per_sample(outputFormat);
     int outSamples = swr_get_out_samples(resampleContext, sampleCount);
     if (outSampleSize <= 0 || outSamples < 0) {
       LOGE("Invalid resample sizing: sampleSize=%d channels=%d samples=%d.",
-           outSampleSize, channelCount, outSamples);
+           outSampleSize, effectiveChannelCount, outSamples);
       return AUDIO_DECODER_ERROR_OTHER;
     }
     int64_t bufferOutSize64 =
-        static_cast<int64_t>(outSampleSize) * channelCount * outSamples;
+        static_cast<int64_t>(outSampleSize) * effectiveChannelCount * outSamples;
     if (bufferOutSize64 > INT_MAX) {
       LOGE("Resample output buffer too large: %lld.",
            (long long)bufferOutSize64);
@@ -493,7 +509,7 @@ static int decodePacket(AudioJniContext *jniContext, AVPacket *packet,
     }
 
     const int64_t writtenSize =
-        static_cast<int64_t>(outSampleSize) * channelCount * result;
+        static_cast<int64_t>(outSampleSize) * effectiveChannelCount * result;
     if (writtenSize > INT_MAX ||
         !output.commit(static_cast<int>(writtenSize))) {
       return AUDIO_DECODER_ERROR_OTHER;
@@ -541,7 +557,8 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_androidx_media3_decoder_ffmpeg_FfmpegAudioDecoder_ffmpegInitialize(
     JNIEnv *env, jobject, jstring codec_name, jbyteArray extra_data,
     jboolean output_float, jint raw_sample_rate, jint raw_channel_count,
-    jint raw_block_align, jint raw_bits_per_coded_sample, jint raw_bit_rate) {
+    jint raw_block_align, jint raw_bits_per_coded_sample, jint raw_bit_rate,
+    jint target_channel_count) {
   const AVCodec *codec = getCodecByName(env, codec_name);
   if (!codec) {
     LOGE("Codec not found.");
@@ -582,6 +599,7 @@ Java_androidx_media3_decoder_ffmpeg_FfmpegAudioDecoder_ffmpegInitialize(
     return 0L;
   }
 
+  jniContext->targetChannelCount = target_channel_count;
   updateTargetSampleRate(jniContext.get());
   return reinterpret_cast<jlong>(jniContext.release());
 }
@@ -691,7 +709,10 @@ Java_androidx_media3_decoder_ffmpeg_FfmpegAudioDecoder_ffmpegGetChannelCount(
     return -1;
   }
   auto *jniContext = reinterpret_cast<AudioJniContext *>(context);
-  if (jniContext->outputChannelCount > 0) return jniContext->outputChannelCount;
+  if (jniContext->outputChannelCount > 0) {
+    if (jniContext->targetChannelCount > 0) return jniContext->targetChannelCount;
+    return jniContext->outputChannelCount;
+  }
   return jniContext->codecContext->ch_layout.nb_channels;
 }
 

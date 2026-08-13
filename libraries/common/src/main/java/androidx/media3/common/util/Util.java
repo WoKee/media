@@ -2700,7 +2700,12 @@ public final class Util {
           return AudioFormat.CHANNEL_OUT_7POINT1_SURROUND;
         }
       case 12:
-        return AudioFormat.CHANNEL_OUT_7POINT1POINT4;
+        if (Build.VERSION.SDK_INT >= 32) {
+          return AudioFormat.CHANNEL_OUT_7POINT1POINT4;
+        } else {
+          // Before API 32, height channel masks are not available.
+          return AudioFormat.CHANNEL_INVALID;
+        }
       case 13:
         if (Build.VERSION.SDK_INT >= 32) {
           // TODO(b/238402306): Replace with the public AudioFormat.CHANNEL_OUT_13POINT0 constant

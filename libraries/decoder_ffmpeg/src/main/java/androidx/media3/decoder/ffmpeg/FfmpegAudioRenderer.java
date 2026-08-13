@@ -33,6 +33,7 @@ import androidx.annotation.Nullable;
 import androidx.media3.common.C;
 import androidx.media3.common.Format;
 import androidx.media3.common.MimeTypes;
+import android.media.AudioFormat;
 import androidx.media3.common.audio.AudioProcessor;
 import androidx.media3.common.util.TraceUtil;
 import androidx.media3.common.util.UnstableApi;
@@ -166,8 +167,10 @@ public final class FfmpegAudioRenderer extends DecoderAudioRenderer<FfmpegAudioD
     try {
       int initialInputBufferSize =
           format.maxInputSize != Format.NO_VALUE ? format.maxInputSize : DEFAULT_INPUT_BUFFER_SIZE;
+      int targetChannelCount = getTargetChannelCount(format);
       return new FfmpegAudioDecoder(
-          format, NUM_BUFFERS, NUM_BUFFERS, initialInputBufferSize, shouldOutputFloat(format));
+          format, NUM_BUFFERS, NUM_BUFFERS, initialInputBufferSize,
+          shouldOutputFloat(format), targetChannelCount);
     } finally {
       TraceUtil.endSection();
     }
@@ -247,5 +250,33 @@ public final class FfmpegAudioRenderer extends DecoderAudioRenderer<FfmpegAudioD
   private static Format getPcmOutputFormat(Format inputFormat, @C.PcmEncoding int pcmEncoding) {
     return Util.getPcmFormat(
         pcmEncoding, inputFormat.channelCount, FfmpegLibrary.getPcmOutputSampleRate(inputFormat));
+  }
+
+  /**
+   * Returns the target channel count for the decoder output. If the AudioTrack does not support the
+   * decoded channel count on the current API level, the output will be downmixed to a supported
+   * count.
+   *
+   * <p>Note: {@link #sinkSupportsFormat(Format, int)} always returns true for 16-bit PCM regardless
+   * of channel count, so we must check {@link Util#getAudioTrackChannelConfig(int)} directly.
+   */
+  private int getTargetChannelCount(Format inputFormat) {
+    int channelCount = inputFormat.channelCount;
+    if (channelCount <= 0 || channelCount <= 8) {
+      return 0; // No downmix needed for 8 channels or fewer
+    }
+    // sinkSupportsFormat() is unreliable for high channel count PCM formats because
+    // AudioTrackAudioOutputProvider always returns FORMAT_SUPPORTED_DIRECTLY for 16-bit PCM
+    // without checking channel count. Check AudioTrack channel config validity directly.
+    if (Util.getAudioTrackChannelConfig(channelCount) != AudioFormat.CHANNEL_INVALID) {
+      return 0; // AudioTrack supports this channel count on the current API level
+    }
+    // Find the largest supported channel count <= 8
+    for (int count = 8; count >= 1; count--) {
+      if (Util.getAudioTrackChannelConfig(count) != AudioFormat.CHANNEL_INVALID) {
+        return count;
+      }
+    }
+    return 2; // Fallback to stereo
   }
 }
