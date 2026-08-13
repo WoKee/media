@@ -9,6 +9,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout
@@ -33,12 +36,17 @@ jobs:
       - name: Build FFmpeg and AARs
         run: |
           BUILD_LOG="${GITHUB_WORKSPACE}/build-output.log"
-          exec > >(tee -a "$BUILD_LOG") 2>&1
+          # Redirect all output to log file (sync, no process substitution)
+          exec > "$BUILD_LOG" 2>&1
           set -x
+
+          # Ensure log is printed on exit
+          cleanup() { sync; cat "$BUILD_LOG"; }
+          trap cleanup EXIT
 
           FFMPEG_MODULE_PATH="${GITHUB_WORKSPACE}/libraries/decoder_ffmpeg/src/main"
 
-          # Debug: show all env vars related to NDK/Android
+          # Debug: show all env vars
           echo "=== NDK Debug Info ==="
           echo "ANDROID_NDK_HOME = ${ANDROID_NDK_HOME:-unset}"
           echo "ANDROID_NDK_ROOT = ${ANDROID_NDK_ROOT:-unset}"
@@ -56,7 +64,6 @@ jobs:
           elif [ -d "${ANDROID_NDK:-}" ]; then
             NDK="${ANDROID_NDK}"
           else
-            # Search common locations on GitHub runners
             for d in /opt/hostedtoolcache/ndk /usr/local/lib/android/sdk/ndk /opt/android/ndk; do
               if [ -d "$d" ]; then
                 echo "Found NDK dir at: $d"
