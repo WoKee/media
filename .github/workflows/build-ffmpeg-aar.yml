@@ -32,8 +32,9 @@ jobs:
 
       - name: Build FFmpeg and AARs
         run: |
-          set -x
+          set -exo pipefail
           FFMPEG_MODULE_PATH="${GITHUB_WORKSPACE}/libraries/decoder_ffmpeg/src/main"
+          BUILD_LOG="${GITHUB_WORKSPACE}/build-output.log"
           
           # Find NDK
           NDK_PATH=""
@@ -47,7 +48,7 @@ jobs:
           # Clone FFmpeg
           cd "${FFMPEG_MODULE_PATH}/jni"
           rm -rf ffmpeg
-          git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg
+          git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg 2>&1 | tee -a "${BUILD_LOG}"
           
           # Verify NDK tools
           CLANG_PATH="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
@@ -56,7 +57,7 @@ jobs:
           
           # Build FFmpeg
           chmod +x build_ffmpeg.sh
-          bash build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK_PATH}" "linux-x86_64" 21 vorbis opus flac
+          bash build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK_PATH}" "linux-x86_64" 21 vorbis opus flac 2>&1 | tee -a "${BUILD_LOG}"
           
           # Copy .a files
           JNILIBS="${FFMPEG_MODULE_PATH}/jniLibs"
@@ -68,7 +69,15 @@ jobs:
           # Build AARs
           cd "${GITHUB_WORKSPACE}"
           chmod +x gradlew
-          ./gradlew assembleLibs --no-daemon --stacktrace
+          ./gradlew assembleLibs --no-daemon --stacktrace 2>&1 | tee -a "${BUILD_LOG}"
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build-output.log
+          retention-days: 7
 
       - name: Upload AAR artifacts
         if: always()
