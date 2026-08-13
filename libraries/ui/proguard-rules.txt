@@ -26,6 +26,7 @@
   void stop();
 }
 
+
 -keepnames class androidx.media3.transformer.CompositionPlayer {}
 -keepclassmembers class androidx.media3.transformer.CompositionPlayer {
   void setScrubbingModeEnabled(boolean);
