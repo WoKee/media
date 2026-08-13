@@ -36,28 +36,58 @@ jobs:
           FFMPEG_MODULE_PATH="${GITHUB_WORKSPACE}/libraries/decoder_ffmpeg/src/main"
           BUILD_LOG="${GITHUB_WORKSPACE}/build-output.log"
           
-          # Find NDK
-          NDK_PATH=""
-          if [ -n "${ANDROID_NDK_HOME}" ]; then
-            NDK_PATH="${ANDROID_NDK_HOME}"
-          elif [ -n "${ANDROID_SDK_ROOT}" ]; then
-            NDK_PATH=$(find "${ANDROID_SDK_ROOT}/ndk" -maxdepth 1 -type d | sort -V | tail -1)
+          # Debug: show all env vars related to NDK/Android
+          echo "=== NDK Debug Info ==="
+          echo "steps.setup-ndk.outputs.ndk-path = ${NDK_PATH:-unset}"
+          echo "ANDROID_NDK_HOME = ${ANDROID_NDK_HOME:-unset}"
+          echo "ANDROID_NDK_ROOT = ${ANDROID_NDK_ROOT:-unset}"
+          echo "ANDROID_NDK = ${ANDROID_NDK:-unset}"
+          echo "ANDROID_SDK_ROOT = ${ANDROID_SDK_ROOT:-unset}"
+          env | grep -i ndk || echo "No NDK env vars found"
+          
+          # Find NDK - try multiple sources
+          NDK=""
+          if [ -d "${ANDROID_NDK_HOME:-}" ]; then
+            NDK="${ANDROID_NDK_HOME}"
+          elif [ -d "${ANDROID_NDK_ROOT:-}" ]; then
+            NDK="${ANDROID_NDK_ROOT}"
+          elif [ -d "${ANDROID_NDK:-}" ]; then
+            NDK="${ANDROID_NDK}"
+          else
+            # Search common locations
+            for d in /opt/android/ndk /usr/local/lib/android/sdk/ndk /opt/hostedtoolcache/ndk; do
+              if [ -d "$d" ]; then
+                echo "Found NDK dir at: $d"
+                ls -la "$d"
+                NDK=$(find "$d" -maxdepth 3 -name "ndk-build" -exec dirname {} \; 2>/dev/null | head -1)
+                if [ -n "$NDK" ]; then break; fi
+              fi
+            done
           fi
-          echo "Found NDK at: ${NDK_PATH}"
+          
+          if [ -z "$NDK" ]; then
+            echo "ERROR: Could not find NDK path!"
+            exit 1
+          fi
+          echo "Using NDK: ${NDK}"
+          echo "NDK contents:"
+          ls -la "${NDK}/"
+          
+          # Verify toolchain
+          TC="${NDK}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "Toolchain dir exists: $([ -d "$TC" ] && echo YES || echo NO)"
+          if [ -d "$TC" ]; then
+            ls "$TC"/armv7a-linux-androideabi* 2>/dev/null || echo "No armv7a clang found"
+          fi
           
           # Clone FFmpeg
           cd "${FFMPEG_MODULE_PATH}/jni"
           rm -rf ffmpeg
           git clone --depth=1 -b release-9.0-fongmi https://github.com/WoKee/FFmpeg ffmpeg 2>&1 | tee -a "${BUILD_LOG}"
           
-          # Verify NDK tools
-          CLANG_PATH="${NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi21-clang"
-          echo "Checking clang at: ${CLANG_PATH}"
-          ls -la "${CLANG_PATH}" || echo "clang NOT found"
-          
           # Build FFmpeg
           chmod +x build_ffmpeg.sh
-          bash build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK_PATH}" "linux-x86_64" 21 vorbis opus flac 2>&1 | tee -a "${BUILD_LOG}"
+          bash build_ffmpeg.sh "${FFMPEG_MODULE_PATH}" "${NDK}" "linux-x86_64" 21 vorbis opus flac 2>&1 | tee -a "${BUILD_LOG}"
           
           # Copy .a files
           JNILIBS="${FFMPEG_MODULE_PATH}/jniLibs"
